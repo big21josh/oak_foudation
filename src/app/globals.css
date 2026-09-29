@@ -1321,27 +1321,50 @@ textarea {
    ========================================================= */
 .segmented {
   display: flex;
-  gap: 4px;
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
   width: 100%;
+  max-width: 100%;
   padding: 4px;
-  border-radius: 14px;
-  background: var(--segment);
+  border-radius: 7px;
+  background: #E5E8EE;
+  box-sizing: border-box;
 }
+
 .segmented button {
-  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  flex: 0 1 auto;
   padding: 8px 14px;
   border-radius: 12px;
+  border: 0;
+  font-family: "Avenir Next LT Pro", "Avenir Next", sans-serif;
   font-size: 12px;
   line-height: 16px;
-  font-weight: 600;
+  font-weight: 400;
   text-align: center;
   text-transform: capitalize;
-  color: var(--muted);
+  color: #6B7590;
+  white-space: nowrap;
 }
+
 .segmented button.selected {
-  background: #fff;
-  color: var(--ink);
-  box-shadow: 0 1px 4px #00000014;
+  padding: 8px 44px;
+  background: #FFFFFF;
+  color: #0E1726;
+  box-shadow: 0 1px 4px 0 #00000014;
+}
+
+.segmented button:hover {
+  background: #FFFFFF80;
+}
+
+.segmented button.selected:hover {
+  background: #FFFFFF;
 }
 .day-grid {
   display: grid;

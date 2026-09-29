@@ -8511,6 +8511,7 @@ node_modules/
 !.env.example
 *.tsbuildinfo
 .data/
+.env.local
 </file>
 
 <file path=".prettierignore">
@@ -8728,6 +8729,7 @@ npm run test:smoke
 ```
 
 The smoke script runs only against the local demo and creates synthetic test registrations and private notes. Deploy to a Next.js server host with HTTPS and the environment values configured. This is not a static-export app. No external database, sender account, or public deployment is provisioned by these source files.
+# oak_foudation
 </file>
 
 <file path="tsconfig.json">
