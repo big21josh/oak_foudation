@@ -2012,3 +2012,40 @@ textarea {
     scroll-behavior: auto !important;
   }
 }
+.consent {
+  display: flex;
+  flex-direction: row;
+  align-items: flex-start;
+  gap: 12px;
+  width: 100%;
+  max-width: 566px;
+  padding: 16px;
+  box-sizing: border-box;
+  border: 1px solid #1C2E5A2E;
+  border-radius: 16px;
+  cursor: pointer;
+}
+
+.consent input[type="checkbox"] {
+  flex: 0 0 20px;
+  width: 20px;
+  height: 22px;
+  margin: 0;
+  cursor: pointer;
+}
+
+.consent span {
+  flex: 1;
+  min-width: 0;
+  font-family: "Avenir Next LT Pro", "Avenir Next", sans-serif;
+  font-size: 14px;
+  line-height: 20px;
+  font-weight: 400;
+  color: #0E1726;
+}
+
+.consent a {
+  color: #1C2E5A;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
