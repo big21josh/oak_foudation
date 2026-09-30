@@ -1,53 +1,41 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { registrationSchema } from '@/lib/validation';
 import { register, recordEmailStatus } from '@/lib/repository';
-import { guard, fail, rateLimit, RateLimitError } from '@/lib/api';
 import { sendConfirmation } from '@/lib/confirmation-email';
 import { secretMatches } from '@/lib/security';
+import { guard, fail, rateLimit, RateLimitError } from '@/lib/api';
 
 export async function POST(request: NextRequest) {
   try {
     guard(request);
-    rateLimit(request, 'registration', 8, 10 * 60 * 1000);
-    if (Number(request.headers.get('content-length') ?? 0) > 16000)
-      return fail(new Error('Form is too large.'), 413);
+    rateLimit(request, 'register', 10, 15 * 60 * 1000);
 
-    const body = await request.json();
-    if (body.website) return fail(new Error('Unable to submit form.'));
+    const parsed = registrationSchema.safeParse(await request.json());
+    if (!parsed.success) return fail(new Error(parsed.error.issues[0]?.message ?? 'Invalid form.'));
 
-    const parsed = registrationSchema.safeParse(body);
-    if (!parsed.success) return fail(new Error(parsed.error.issues[0].message));
+    const { staffAccessCode, staff_access_code, ...input } = parsed.data;
 
-    const { staffAccessCode, staff_access_code, ...registrationInput } = parsed.data;
+    // Optional gate for the Coordination Team role. Only enforced when STAFF_ACCESS_CODE is set.
     if (
-      ['OAK Staff', 'Coordination Team'].includes(registrationInput.role) &&
+      input.role === 'Coordination Team' &&
       !secretMatches(staffAccessCode ?? staff_access_code ?? '', process.env.STAFF_ACCESS_CODE)
-    ) {
-      return fail(new Error('A valid staff access code is required for this role.'), 403);
-    }
+    )
+      return fail(new Error('That staff access code is not correct.'), 403);
 
-    const registration = await register(registrationInput);
-    const emailStatus = await sendConfirmation(registration);
-    await recordEmailStatus(registration, emailStatus);
+    const entry = await register(input);
 
-    const response = NextResponse.json(
-      { registration: { ...registration, sessionToken: undefined } },
-      { status: 201 },
-    );
+    // Partners get the QR email; other roles return 'not-applicable'.
+    await recordEmailStatus(entry, await sendConfirmation(entry));
 
-    const cookieOptions = {
+    const { sessionToken, ...registration } = entry;
+    const response = NextResponse.json({ registration }, { status: 201 });
+    response.cookies.set('oak-session', sessionToken!, {
       httpOnly: true,
-      secure: request.nextUrl.protocol === 'https:',
-      sameSite: 'lax' as const,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: 'lax',
       path: '/',
-      maxAge: 60 * 60 * 24 * 14,
-    };
-
-    if (registration.sessionToken) {
-      response.cookies.set('oak-session', registration.sessionToken, cookieOptions);
-      response.cookies.set('oak_participant_session', registration.sessionToken, cookieOptions);
-    }
-
+      maxAge: 60 * 60 * 24 * 30,
+    });
     return response;
   } catch (e) {
     return fail(e, e instanceof RateLimitError ? 429 : 400);

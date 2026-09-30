@@ -20,7 +20,7 @@ The sidebar and mobile navigation follow the PDF's final access matrix:
 
 | Role                           | After registration | Available pages                                         |
 | ------------------------------ | ------------------ | ------------------------------------------------------- |
-| Partner                        | `/qr-code`         | Registration, My QR Code                                |
+| Partner                        | `/qr-code`         | Registration, My QR Code, Partners                      |
 | OAK Staff, Presenter, Observer | `/programme`       | Registration, Programme, Partners                       |
 | Coordination Team              | `/check-in`        | Registration, Check-in, Programme, Partners, Attendance |
 

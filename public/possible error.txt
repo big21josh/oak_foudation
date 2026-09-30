@@ -1,0 +1,1 @@
+Partners page: Partners can open it, following the PDF's section 8 text. That contradicts the section 10 matrix, which says No. To revert, set partnersRoles back to programmeRoles in src/lib/access.ts.

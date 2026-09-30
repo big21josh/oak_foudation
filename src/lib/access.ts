@@ -11,3 +11,5 @@ export async function requirePage(roles: string[]) {
   if (!roles.includes(role)) redirect(role === 'Partner' ? '/qr-code' : '/programme');
 }
 export const programmeRoles = ['OAK Staff', 'Coordination Team', 'Presenter', 'Observer'];
+// Requirements section 8: the Partners page is open to all five roles.
+export const partnersRoles = ['Partner', ...programmeRoles];

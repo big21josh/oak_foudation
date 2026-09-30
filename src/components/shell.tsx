@@ -28,11 +28,9 @@ export function Shell({
     ...(staff ? [{ href: '/check-in', label: 'Check In', icon: icons.checkIn }] : []),
     ...(role === 'Partner' ? [{ href: '/qr-code', label: 'My QR Code', icon: icons.checkIn }] : []),
     ...(role && role !== 'Partner'
-      ? [
-          { href: '/programme', label: 'Programme', icon: icons.programme },
-          { href: '/partners', label: 'Partners', icon: icons.partners },
-        ]
+      ? [{ href: '/programme', label: 'Programme', icon: icons.programme }]
       : []),
+    ...(role ? [{ href: '/partners', label: 'Partners', icon: icons.partners }] : []),
     ...(staff ? [{ href: '/attendance', label: 'Attendance', icon: icons.attendance }] : []),
   ];
 

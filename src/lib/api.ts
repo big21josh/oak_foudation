@@ -37,7 +37,7 @@ export function guard(request: NextRequest) {
 export function rateLimit(request: NextRequest, bucket: string, limit: number, windowMs: number) {
   const now = Date.now();
   const key = `${bucket}:${clientAddress(request)}`;
-  const limits = (runtime.oakRateLimits ??= new Map());
+  const limits = (runtime.oakRateLimits ??= new Map<string, RateWindow>());
   const window = limits.get(key) ?? { hits: [] };
   window.hits = window.hits.filter((hit) => hit > now - windowMs);
   if (window.hits.length >= limit) {

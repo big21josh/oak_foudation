@@ -9,7 +9,7 @@ import {
   MapPin,
   Users,
   RefreshCw,
-  Phone,
+  Search,
   Camera,
   CameraOff,
   Radio,
@@ -17,7 +17,7 @@ import {
 
 import type { Registration, Session } from '@/lib/types';
 import { event, initials, nextSession } from '@/lib/data';
-import { Card, Status, Modal, requestJson } from './ui';
+import { Card, Status, requestJson } from './ui';
 
 /** "09:34 · 9 November 2026" in Harare time, from a real ISO check-in timestamp. */
 function stamp(iso: string | null) {
@@ -46,7 +46,9 @@ export function CheckIn({ demo, sessions }: { demo: boolean; sessions: Session[]
   );
   const [failed, setFailed] = useState(false);
   const [camera, setCamera] = useState(false);
-  const [contact, setContact] = useState(false);
+  const [failMessage, setFailMessage] = useState('Code is invalid or unregistered');
+  const [people, setPeople] = useState<Registration[]>([]);
+  const [query, setQuery] = useState('');
   // Real count from /api/attendance — stays null until we have it (no made-up numbers).
   const [count, setCount] = useState<number | null>(null);
 
@@ -76,7 +78,21 @@ export function CheckIn({ demo, sessions }: { demo: boolean; sessions: Session[]
     [],
   );
 
-  async function scan(value: string, sample = false) {
+  async function loadPeople() {
+    try {
+      const data = await requestJson('/api/attendance');
+      setPeople(data.registrations.filter((r: Registration) => r.role === 'Partner'));
+      return data.registrations as Registration[];
+    } catch {
+      return null;
+    }
+  }
+
+  useEffect(() => {
+    void loadPeople();
+  }, []);
+
+  async function scan(value: string, mode: 'code' | 'id' | 'sample' = 'code') {
     if (scanning.current) return;
     scanning.current = true;
     setBusy(true);
@@ -84,14 +100,15 @@ export function CheckIn({ demo, sessions }: { demo: boolean; sessions: Session[]
     stop();
 
     try {
-      const response = await fetch(sample ? '/api/demo-check-in' : '/api/check-in', {
+      const response = await fetch(mode === 'sample' ? '/api/demo-check-in' : '/api/check-in', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(sample ? { id: value } : { code: value }),
+        body: JSON.stringify(mode === 'code' ? { code: value } : { id: value }),
       });
       const data = await response.json();
 
       if (data.unrecognised) {
+        setFailMessage('Code is invalid or unregistered');
         setFailed(true);
         return;
       }
@@ -99,14 +116,14 @@ export function CheckIn({ demo, sessions }: { demo: boolean; sessions: Session[]
 
       setResult(data);
 
-      try {
-        const attendance = await requestJson('/api/attendance');
-        setCount(attendance.registrations.filter((r: Registration) => r.checkedInAt).length);
-      } catch {
-        setCount(null); // attendance endpoint unavailable — hide the summary rather than guess
-      }
+      const everyone = await loadPeople();
+      // attendance endpoint unavailable — hide the summary rather than guess
+      setCount(everyone ? everyone.filter((r) => r.checkedInAt).length : null);
     } catch (e) {
-      setError((e as Error).message);
+      if (e instanceof TypeError) {
+        setFailMessage('Network error. Check the connection and try again.');
+        setFailed(true);
+      } else setError((e as Error).message);
     } finally {
       scanning.current = false;
       setBusy(false);
@@ -146,11 +163,26 @@ export function CheckIn({ demo, sessions }: { demo: boolean; sessions: Session[]
     setResult(null);
     setFailed(false);
     setCode('');
+    setQuery('');
     setError('');
   }
 
+  function retryScan() {
+    reset();
+    void startCamera();
+  }
+
+  function manualSearch() {
+    reset();
+    setTimeout(() => {
+      const box = document.getElementById('manual-search');
+      box?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      box?.focus();
+    }, 50);
+  }
+
   /* ------------------------------------------------------------
-   * CHECK-IN FAILED  (Figma: "Check-In Failed" / "QR Not Recognised")
+   * CHECK-IN FAILED  ("QR Code Not Recognized")
    * ------------------------------------------------------------ */
   if (failed) {
     return (
@@ -161,8 +193,8 @@ export function CheckIn({ demo, sessions }: { demo: boolean; sessions: Session[]
           </span>
           <div>
             <p className="eyebrow">Check-In Failed</p>
-            <h1 style={{ paddingTop: 6 }}>QR Not Recognised</h1>
-            <p style={{ paddingTop: 4 }}>Code is invalid or unregistered</p>
+            <h1 style={{ paddingTop: 6 }}>QR Code Not Recognized</h1>
+            <p style={{ paddingTop: 4 }}>{failMessage}</p>
           </div>
         </section>
 
@@ -172,10 +204,11 @@ export function CheckIn({ demo, sessions }: { demo: boolean; sessions: Session[]
           </h2>
           <ul className="reasons">
             {[
-              'QR code belongs to a different event',
-              'Registration was not completed',
-              'Code has been altered or corrupted',
-              'Attendee registered under a different email',
+              'Invalid QR code',
+              'Duplicate QR code',
+              'Network error',
+              'Corrupted QR code',
+              'Participant not found',
             ].map((reason) => (
               <li key={reason}>
                 <img src="/icons/container-margin-2.svg" width={16} height={18} alt="" />
@@ -185,23 +218,18 @@ export function CheckIn({ demo, sessions }: { demo: boolean; sessions: Session[]
           </ul>
         </Card>
 
-        <button className="button full" onClick={reset}>
+        <button className="button full" onClick={retryScan}>
           <RefreshCw size={17} />
-          Try Again
+          Retry Scan
         </button>
-        <button className="button secondary full" onClick={() => setContact(true)}>
-          <Phone size={15} />
-          Contact Coordination Team
+        <button className="button secondary full" onClick={manualSearch}>
+          <Search size={15} />
+          Manual Search
         </button>
-
-        {contact && (
-          <Modal title="Event coordination" onClose={() => setContact(false)}>
-            <p className="muted">
-              Please speak to the coordination team at the event registration desk. They can locate
-              the attendee’s registration and confirm their entry pass.
-            </p>
-          </Modal>
-        )}
+        <button className="button secondary full" onClick={reset}>
+          <ScanLine size={17} />
+          Return to Scanner
+        </button>
       </div>
     );
   }
@@ -222,7 +250,7 @@ export function CheckIn({ demo, sessions }: { demo: boolean; sessions: Session[]
           <div>
             <p className="eyebrow">{result.already ? 'Already checked in' : 'Check-in complete'}</p>
             <h1 style={{ paddingTop: 6 }}>
-              {result.already ? 'Already Checked In' : 'Checked In Successfully'}
+              {result.already ? 'Already Checked In' : 'Participant Successfully Checked In'}
             </h1>
             <p className="row" style={{ gap: 6, paddingTop: 6 }}>
               <Clock size={12} />
@@ -244,6 +272,31 @@ export function CheckIn({ demo, sessions }: { demo: boolean; sessions: Session[]
               <span className="badge">{r.role}</span>
             </div>
           </div>
+
+          <dl className="details" style={{ marginTop: 16 }}>
+            <div>
+              <dt>Full Name</dt>
+              <dd>
+                {r.firstName} {r.lastName}
+              </dd>
+            </div>
+            <div>
+              <dt>Organisation</dt>
+              <dd>{r.organisation}</dd>
+            </div>
+            <div>
+              <dt>Role</dt>
+              <dd>{r.role}</dd>
+            </div>
+            <div>
+              <dt>Registration Status</dt>
+              <dd>Registered</dd>
+            </div>
+            <div>
+              <dt>Check-In Time</dt>
+              <dd>{stamp(r.checkedInAt)}</dd>
+            </div>
+          </dl>
 
           {next && (
             <div className="next-session">
@@ -360,14 +413,19 @@ export function CheckIn({ demo, sessions }: { demo: boolean; sessions: Session[]
               Simulate QR Scan
             </h2>
             {[
-              { id: 'collin', name: 'Collin Manyande', role: 'Partner', code: 'OAK-2026-7842-XKPH' },
+              {
+                id: 'collin',
+                name: 'Collin Manyande',
+                role: 'Partner',
+                code: 'OAK-2026-7842-XKPH',
+              },
               { id: 'kayden', name: 'Kayden Mamu', role: 'Partner', code: 'OAK-2026-5592-FWBN' },
             ].map((p) => (
               <button
                 disabled={busy}
                 className="sample-person"
                 key={p.id}
-                onClick={() => scan(p.id, true)}
+                onClick={() => scan(p.id, 'sample')}
               >
                 <span className="avatar small">{initials(p.name)}</span>
                 <span>
@@ -379,6 +437,67 @@ export function CheckIn({ demo, sessions }: { demo: boolean; sessions: Session[]
             ))}
           </Card>
         )}
+
+        <Card>
+          <h2 className="eyebrow" style={{ marginBottom: 12 }}>
+            Manual Search
+          </h2>
+          <div className="search-input">
+            <Search size={16} />
+            <input
+              id="manual-search"
+              aria-label="Search partners by name or organisation"
+              type="search"
+              placeholder="Search partner name or organisation…"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              autoComplete="off"
+            />
+          </div>
+          {query.trim() && (
+            <div className="attendance-list" style={{ marginTop: 8 }}>
+              {people
+                .filter((p) =>
+                  `${p.firstName} ${p.lastName} ${p.organisation}`
+                    .toLowerCase()
+                    .includes(query.trim().toLowerCase()),
+                )
+                .slice(0, 8)
+                .map((p) => (
+                  <div className="person" key={p.id}>
+                    <div className="row between">
+                      <strong>
+                        {p.firstName} {p.lastName}
+                      </strong>
+                      <span className={`pill ${p.checkedInAt ? 'attended' : ''}`}>
+                        {p.checkedInAt ? 'Attended' : 'Registered'}
+                      </span>
+                    </div>
+                    <p>
+                      {p.organisation} · {p.role}
+                    </p>
+                    <button
+                      className="button full"
+                      style={{ marginTop: 8 }}
+                      disabled={busy}
+                      onClick={() => scan(p.id, 'id')}
+                    >
+                      {p.checkedInAt ? 'View Check-In' : 'Check In'}
+                    </button>
+                  </div>
+                ))}
+              {!people.some((p) =>
+                `${p.firstName} ${p.lastName} ${p.organisation}`
+                  .toLowerCase()
+                  .includes(query.trim().toLowerCase()),
+              ) && (
+                <p className="muted" style={{ padding: '12px 0' }}>
+                  Participant not found.
+                </p>
+              )}
+            </div>
+          )}
+        </Card>
 
         <Card>
           <h2 className="eyebrow" style={{ marginBottom: 12 }}>

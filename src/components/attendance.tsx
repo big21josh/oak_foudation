@@ -43,6 +43,7 @@ export function Attendance({ initial }: { initial: Person[] }) {
 
   const checked = people.filter((p) => p.checkedInAt).length;
   const expected = Math.max(event.expected, people.length);
+  const rate = people.length ? Math.round((checked / people.length) * 100) : 0;
   const filtered = people.filter(
     (p) =>
       `${p.firstName} ${p.lastName} ${p.organisation}`.toLowerCase().includes(query.toLowerCase()) &&
@@ -107,6 +108,14 @@ export function Attendance({ initial }: { initial: Person[] }) {
             <div>
               <dt>Total registered</dt>
               <dd>{people.length}</dd>
+            </div>
+            <div>
+              <dt>Total attendees</dt>
+              <dd>{checked}</dd>
+            </div>
+            <div>
+              <dt>Attendance rate</dt>
+              <dd>{rate}%</dd>
             </div>
             {registrationRoles.map((r) => (
               <div key={r}>

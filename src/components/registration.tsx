@@ -21,6 +21,7 @@ export function RegistrationPage({ initial }: { initial: Registration | null }) 
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const [qr, setQr] = useState('');
+  const [role, setRole] = useState('');
 
   useEffect(() => {
     let active = true;
@@ -34,7 +35,9 @@ export function RegistrationPage({ initial }: { initial: Registration | null }) 
         .then((url) => {
           if (active) setQr(url);
         })
-        .catch(() => setError('Unable to create the QR image. Your entry code below remains valid.'));
+        .catch(() =>
+          setError('Unable to create the QR image. Your entry code below remains valid.'),
+        );
     return () => {
       active = false;
     };
@@ -117,8 +120,10 @@ export function RegistrationPage({ initial }: { initial: Registration | null }) 
             {[
               ['Name', `${entry.firstName} ${entry.lastName}`],
               ['Organisation', entry.organisation],
+              ['Registration ID', entry.code || '—'],
               ['Role', entry.role],
               ['Email', entry.email],
+              ['Event', `OAK Foundation ${event.name}`],
               ['Event Dates', event.dates],
               ['Location', `${event.location}, Zimbabwe`],
             ].map(([label, value]) => (
@@ -215,12 +220,23 @@ export function RegistrationPage({ initial }: { initial: Registration | null }) 
               name="role"
               label="Role / Capacity"
               required
+              onValueChange={setRole}
               options={[
                 { value: '', label: 'Select your role', disabled: true },
                 ...registrationRoles.map((role) => ({ value: role, label: role })),
               ]}
             />
           </div>
+          {role === 'Coordination Team' && (
+            <Field
+              label="Staff access code"
+              name="staffAccessCode"
+              type="password"
+              autoComplete="off"
+              placeholder="Provided by the event organisers"
+              maxLength={200}
+            />
+          )}
           <Field
             label="Email Address"
             name="email"
@@ -254,9 +270,15 @@ export function RegistrationPage({ initial }: { initial: Registration | null }) 
               maxLength={500}
             />
             <Field
-              label="Travel & Accommodation"
+              label="Travel Requirements"
               name="travel"
-              placeholder="e.g. Flight from London, hotel needed"
+              placeholder="e.g. Flight from London, airport pickup"
+              maxLength={500}
+            />
+            <Field
+              label="Accommodation Requirements"
+              name="accommodation"
+              placeholder="e.g. Hotel needed, ground-floor room"
               maxLength={500}
             />
           </fieldset>

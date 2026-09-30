@@ -38,7 +38,9 @@ for (const [i, role] of roles.entries()) {
         ? role === 'Partner'
         : ['/check-in', '/attendance'].includes(page)
           ? role === 'Coordination Team'
-          : role !== 'Partner';
+          : page === '/partners'
+            ? true
+            : role !== 'Partner';
     const response = await call(page, cookie);
     const html = await response.text();
     const redirected = response.status === 307 || html.includes('NEXT_REDIRECT');
@@ -68,6 +70,20 @@ assert.equal(
   403,
 );
 assert.equal((await call('/api/check-in', coordinator.cookie, { code: 'invalid' })).status, 404);
+// Manual Search check-in by participant id
+const byId = await call('/api/check-in', coordinator.cookie, { id: partner.registration.id }).then(
+  (r) => r.json(),
+);
+assert.equal(byId.already, true);
+assert.equal(byId.registration.checkedInAt, first.registration.checkedInAt);
+assert.equal(
+  (await call('/api/check-in', coordinator.cookie, { id: presenter.registration.id })).status,
+  404,
+);
+assert.equal(
+  (await call('/api/check-in', presenter.cookie, { id: partner.registration.id })).status,
+  403,
+);
 const note = await call('/api/notes', presenter.cookie, {
   text: 'Private requirements test note',
   day: 1,
