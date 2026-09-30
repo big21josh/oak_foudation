@@ -41,6 +41,7 @@ NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=YOUR_PUBLISHABLE_KEY
 SUPABASE_SECRET_KEY=YOUR_SERVER_SECRET_KEY
 RESEND_API_KEY=
 EMAIL_FROM=
+STAFF_ACCESS_CODE=
 ```
 
 The URL and publishable key are browser-safe. `SUPABASE_SECRET_KEY` is server-only. Never give server secrets a `NEXT_PUBLIC_` prefix or paste them into chat. Keep `.env.local` out of source control. Restart the app after changing these values.
