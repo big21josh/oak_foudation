@@ -201,6 +201,7 @@ public/
   favicon.svg
   Logo-Oak-Foundation.svg
   oak-brand.png
+  possible error.txt
 scripts/
   generate-seed.ts
   http-smoke.mjs
@@ -2132,6 +2133,10 @@ This section contains the contents of the repository's files.
 </svg>
 </file>
 
+<file path="public/possible error.txt">
+Partners page: Partners can open it, following the PDF's section 8 text. That contradicts the section 10 matrix, which says No. To revert, set partnersRoles back to programmeRoles in src/lib/access.ts.
+</file>
+
 <file path="scripts/generate-seed.ts">
 import { writeFileSync } from 'node:fs';
 import { partners, sessions, initialNotes, resources } from '../src/lib/data';
@@ -2162,154 +2167,6 @@ resources.forEach((r) =>
 writeFileSync('supabase/seed.sql', rows.join('\n') + '\n');
 </file>
 
-<file path="scripts/http-smoke.mjs">
-import assert from 'node:assert/strict';
-const base = 'http://127.0.0.1:3000';
-const home = await fetch(base).then((r) => r.text());
-assert(home.includes('Local demo'), 'Run only against local demo');
-const run = Date.now();
-const roles = ['Partner', 'OAK Staff', 'Coordination Team', 'Presenter', 'Observer'];
-const users = [];
-async function call(path, cookie, body) {
-  const r = await fetch(base + path, {
-    method: body ? 'POST' : 'GET',
-    redirect: 'manual',
-    headers: { 'Content-Type': 'application/json', ...(cookie ? { cookie } : {}) },
-    ...(body ? { body: JSON.stringify(body) } : {}),
-  });
-  return r;
-}
-for (const [i, role] of roles.entries()) {
-  const r = await call('/api/register', '', {
-    firstName: 'Requirements QA',
-    lastName: String(i),
-    organisation: 'Synthetic Test',
-    email: `requirements-${run}-${i}@example.test`,
-    phone: '+263000000000',
-    role,
-    consent: true,
-    accommodation: 'Test room',
-    travel: 'Test travel',
-  });
-  assert.equal(r.status, 201, await r.clone().text());
-  const { registration } = await r.json();
-  const cookie = r.headers.get('set-cookie').split(';')[0];
-  assert.equal(registration.sessionToken, undefined);
-  assert.equal(Boolean(registration.code), role === 'Partner');
-  users.push({ cookie, registration });
-  for (const page of ['/check-in', '/attendance', '/programme', '/partners', '/qr-code']) {
-    const allowed =
-      page === '/qr-code'
-        ? role === 'Partner'
-        : ['/check-in', '/attendance'].includes(page)
-          ? role === 'Coordination Team'
-          : page === '/partners'
-            ? true
-            : role !== 'Partner';
-    const response = await call(page, cookie);
-    const html = await response.text();
-    const redirected = response.status === 307 || html.includes('NEXT_REDIRECT');
-    assert.equal(redirected, !allowed, `${role} ${page}`);
-  }
-  assert.equal(
-    (await call('/api/attendance', cookie)).status,
-    role === 'Coordination Team' ? 200 : 403,
-  );
-}
-assert.equal((await call('/api/attendance', '')).status, 403);
-const partner = users[0],
-  coordinator = users[2],
-  presenter = users[3];
-const first = await call('/api/check-in', coordinator.cookie, {
-  code: partner.registration.code,
-}).then((r) => r.json());
-assert.equal(first.already, false);
-assert.equal(first.registration.sessionToken, undefined);
-const again = await call('/api/check-in', coordinator.cookie, {
-  code: partner.registration.code,
-}).then((r) => r.json());
-assert.equal(again.already, true);
-assert.equal(first.registration.checkedInAt, again.registration.checkedInAt);
-assert.equal(
-  (await call('/api/check-in', presenter.cookie, { code: partner.registration.code })).status,
-  403,
-);
-assert.equal((await call('/api/check-in', coordinator.cookie, { code: 'invalid' })).status, 404);
-// Manual Search check-in by participant id
-const byId = await call('/api/check-in', coordinator.cookie, { id: partner.registration.id }).then(
-  (r) => r.json(),
-);
-assert.equal(byId.already, true);
-assert.equal(byId.registration.checkedInAt, first.registration.checkedInAt);
-assert.equal(
-  (await call('/api/check-in', coordinator.cookie, { id: presenter.registration.id })).status,
-  404,
-);
-assert.equal(
-  (await call('/api/check-in', presenter.cookie, { id: partner.registration.id })).status,
-  403,
-);
-const note = await call('/api/notes', presenter.cookie, {
-  text: 'Private requirements test note',
-  day: 1,
-  sessionId: 'opening',
-}).then((r) => r.json());
-assert(note.note?.id, JSON.stringify(note));
-const edit = await call('/api/notes', presenter.cookie, {
-  id: note.note.id,
-  text: 'Edited private requirements note',
-  day: 1,
-  sessionId: 'opening',
-}).then((r) => r.json());
-assert.equal(edit.note.text, 'Edited private requirements note');
-assert.equal(
-  (
-    await call('/api/notes', coordinator.cookie, {
-      id: note.note.id,
-      text: 'Cross-user edit blocked',
-      day: 1,
-      sessionId: 'opening',
-    })
-  ).status,
-  400,
-);
-const other = await call('/programme?tab=docs', users[4].cookie).then((r) => r.text());
-assert(!other.includes('Edited private requirements note'));
-console.log(
-  'PASS: all five role journeys, 25 page access checks, API access, Partner-only QR, duplicate check-in, note editing and privacy',
-);
-</file>
-
-<file path="src/app/api/attendance/route.ts">
-import { NextRequest, NextResponse } from 'next/server';
-import { allRegistrations } from '@/lib/repository';
-import { currentRole } from '@/lib/access';
-import { guard, fail } from '@/lib/api';
-
-export async function GET(request: NextRequest) {
-  try {
-    guard(request);
-    if ((await currentRole()) !== 'Coordination Team')
-      return fail(new Error('Coordination Team access is required.'), 403);
-
-    const registrations = (await allRegistrations()).map(
-      ({ id, firstName, lastName, organisation, role, createdAt, checkedInAt }) => ({
-        id,
-        firstName,
-        lastName,
-        organisation,
-        role,
-        createdAt,
-        checkedInAt,
-      }),
-    );
-    return NextResponse.json({ registrations }, { headers: { 'Cache-Control': 'no-store' } });
-  } catch (e) {
-    return fail(e);
-  }
-}
-</file>
-
 <file path="src/app/api/auth/sign-out/route.ts">
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
@@ -2320,41 +2177,6 @@ export async function POST(request: NextRequest) {
     const client = await createClient();
     await client.auth.signOut();
     return NextResponse.json({ ok: true });
-  } catch (e) {
-    return fail(e);
-  }
-}
-</file>
-
-<file path="src/app/api/check-in/route.ts">
-import { NextRequest, NextResponse } from 'next/server';
-import { checkIn, allRegistrations } from '@/lib/repository';
-import { currentRole } from '@/lib/access';
-import { codeSchema } from '@/lib/validation';
-import { guard, fail } from '@/lib/api';
-
-export async function POST(request: NextRequest) {
-  try {
-    guard(request);
-    if ((await currentRole()) !== 'Coordination Team')
-      return fail(new Error('Coordination Team access is required.'), 403);
-
-    const body = await request.json();
-    // Scanner / manual code entry send `code`; Manual Search sends the participant `id`.
-    const raw =
-      typeof body?.id === 'string'
-        ? (await allRegistrations()).find((r) => r.id === body.id)?.code
-        : body?.code;
-    const code = codeSchema.safeParse(raw);
-    if (!code.success) return NextResponse.json({ unrecognised: true }, { status: 404 });
-
-    const result = await checkIn(code.data);
-    if (!result) return NextResponse.json({ unrecognised: true }, { status: 404 });
-
-    return NextResponse.json({
-      ...result,
-      registration: { ...result.registration, sessionToken: undefined },
-    });
   } catch (e) {
     return fail(e);
   }
@@ -2404,97 +2226,6 @@ export async function POST(request: NextRequest) {
     });
   } catch (e) {
     return fail(e);
-  }
-}
-</file>
-
-<file path="src/app/api/notes/route.ts">
-import { NextRequest, NextResponse } from 'next/server';
-import { currentRole, programmeRoles } from '@/lib/access';
-import { addNote, updateNote, myRegistration, staffUser } from '@/lib/repository';
-import { noteSchema } from '@/lib/validation';
-import { guard, fail } from '@/lib/api';
-import { z } from 'zod';
-
-// The owner is always taken from the server-side session, never from the request body.
-const bodySchema = noteSchema
-  .omit({ name: true, organisation: true })
-  .extend({ id: z.string().min(1).max(160).optional() });
-
-export async function POST(request: NextRequest) {
-  try {
-    guard(request);
-    if (!programmeRoles.includes((await currentRole()) ?? ''))
-      return fail(new Error('Programme access is required.'), 403);
-
-    const parsed = bodySchema.safeParse(await request.json());
-    if (!parsed.success) return fail(new Error(parsed.error.issues[0]?.message ?? 'Invalid note.'));
-    const { id, ...fields } = parsed.data;
-
-    const registration = await myRegistration();
-    const staff = registration ? null : await staffUser();
-    const ownerId = registration?.id ?? staff?.id;
-    if (!ownerId) return fail(new Error('Register or sign in to save notes.'), 401);
-
-    const input = {
-      ...fields,
-      ownerId,
-      name: registration ? `${registration.firstName} ${registration.lastName}` : 'Coordination Team',
-      organisation: registration?.organisation ?? 'OAK Foundation',
-    };
-
-    const note = id
-      ? await updateNote(id, ownerId, input)
-      : await addNote(input, registration ? 'participant' : 'admin');
-    return NextResponse.json({ note });
-  } catch (e) {
-    return fail(e);
-  }
-}
-</file>
-
-<file path="src/app/api/register/route.ts">
-import { NextRequest, NextResponse } from 'next/server';
-import { registrationSchema } from '@/lib/validation';
-import { register, recordEmailStatus } from '@/lib/repository';
-import { sendConfirmation } from '@/lib/confirmation-email';
-import { secretMatches } from '@/lib/security';
-import { guard, fail, rateLimit, RateLimitError } from '@/lib/api';
-
-export async function POST(request: NextRequest) {
-  try {
-    guard(request);
-    rateLimit(request, 'register', 10, 15 * 60 * 1000);
-
-    const parsed = registrationSchema.safeParse(await request.json());
-    if (!parsed.success) return fail(new Error(parsed.error.issues[0]?.message ?? 'Invalid form.'));
-
-    const { staffAccessCode, staff_access_code, ...input } = parsed.data;
-
-    // Optional gate for the Coordination Team role. Only enforced when STAFF_ACCESS_CODE is set.
-    if (
-      input.role === 'Coordination Team' &&
-      !secretMatches(staffAccessCode ?? staff_access_code ?? '', process.env.STAFF_ACCESS_CODE)
-    )
-      return fail(new Error('That staff access code is not correct.'), 403);
-
-    const entry = await register(input);
-
-    // Partners get the QR email; other roles return 'not-applicable'.
-    await recordEmailStatus(entry, await sendConfirmation(entry));
-
-    const { sessionToken, ...registration } = entry;
-    const response = NextResponse.json({ registration }, { status: 201 });
-    response.cookies.set('oak-session', sessionToken!, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: 'lax',
-      path: '/',
-      maxAge: 60 * 60 * 24 * 30,
-    });
-    return response;
-  } catch (e) {
-    return fail(e, e instanceof RateLimitError ? 429 : 400);
   }
 }
 </file>
@@ -2582,37 +2313,6 @@ export default async function Page() {
 }
 </file>
 
-<file path="src/app/partners/[id]/page.tsx">
-import { requirePage, partnersRoles } from '@/lib/access';
-import { notFound } from 'next/navigation';
-import { PartnerDetail } from '@/components/partners';
-import { content } from '@/lib/repository';
-export async function generateMetadata({ params }: { params: Promise<{ id: string }> }) {
-  await requirePage(partnersRoles);
-  const { id } = await params;
-  const partner = (await content()).partners.find((p) => p.id === id);
-  return { title: partner?.name ?? 'Partner not found' };
-}
-export default async function Page({ params }: { params: Promise<{ id: string }> }) {
-  await requirePage(partnersRoles);
-  const { id } = await params;
-  const partner = (await content()).partners.find((p) => p.id === id);
-  if (!partner) notFound();
-  return <PartnerDetail partner={partner} />;
-}
-</file>
-
-<file path="src/app/partners/page.tsx">
-import { requirePage, partnersRoles } from '@/lib/access';
-import { PartnerDirectory } from '@/components/partners';
-import { content } from '@/lib/repository';
-export const metadata = { title: 'Partner Directory' };
-export default async function Page() {
-  await requirePage(partnersRoles);
-  return <PartnerDirectory partners={(await content()).partners} />;
-}
-</file>
-
 <file path="src/app/privacy/page.tsx">
 import Link from 'next/link';
 export const metadata = { title: 'Event registration privacy' };
@@ -2672,23 +2372,6 @@ export default async function Page() {
   const ownerId = (await myRegistration())?.id ?? (await staffUser())?.id;
   const data = await content(ownerId);
   return <Programme sessions={data.sessions} initialNotes={data.notes} />;
-}
-</file>
-
-<file path="src/app/qr-code/page.tsx">
-import { requirePage } from '@/lib/access';
-import { myRegistration } from '@/lib/repository';
-import { RegistrationPage } from '@/components/registration';
-
-export const metadata = { title: 'My QR Code' };
-
-export default async function Page() {
-  await requirePage(['Partner']);
-  const entry = await myRegistration();
-  if (!entry) return <RegistrationPage initial={null} />;
-  // Never send the session token to the browser.
-  const { sessionToken, ...safe } = entry;
-  return <RegistrationPage initial={safe} />;
 }
 </file>
 
@@ -2802,756 +2485,6 @@ export default function NotFound() {
 import { RegistrationPage } from '@/components/registration';
 export default async function Page() {
   return <RegistrationPage initial={null} />;
-}
-</file>
-
-<file path="src/components/attendance.tsx">
-'use client';
-import { useEffect, useState } from 'react';
-import Link from 'next/link';
-import { Search } from 'lucide-react';
-import { Card, Status, requestJson } from './ui';
-import { Dropdown } from './dropdown';
-import { Icon, icons } from './icon';
-import { registrationRoles } from '@/lib/roles';
-import { event } from '@/lib/data';
-
-type Person = {
-  id: string;
-  firstName: string;
-  lastName: string;
-  organisation: string;
-  role: string;
-  createdAt: string;
-  checkedInAt: string | null;
-};
-
-export function Attendance({ initial }: { initial: Person[] }) {
-  const [people, setPeople] = useState(initial),
-    [query, setQuery] = useState(''),
-    [role, setRole] = useState(''),
-    [status, setStatus] = useState(''),
-    [error, setError] = useState('');
-
-  async function refresh() {
-    try {
-      setPeople((await requestJson('/api/attendance')).registrations);
-      setError('');
-    } catch (e) {
-      setError((e as Error).message);
-    }
-  }
-
-  useEffect(() => {
-    const timer = setInterval(() => {
-      if (!document.hidden) void refresh();
-    }, 15000);
-    return () => clearInterval(timer);
-  }, []);
-
-  const checked = people.filter((p) => p.checkedInAt).length;
-  const expected = Math.max(event.expected, people.length);
-  const rate = people.length ? Math.round((checked / people.length) * 100) : 0;
-  const filtered = people.filter(
-    (p) =>
-      `${p.firstName} ${p.lastName} ${p.organisation}`.toLowerCase().includes(query.toLowerCase()) &&
-      (!role || p.role === role) &&
-      (!status || (status === 'attended' ? !!p.checkedInAt : !p.checkedInAt)),
-  );
-  const format = (value: string) =>
-    new Date(value).toLocaleString('en-GB', {
-      timeZone: 'Africa/Harare',
-      dateStyle: 'medium',
-      timeStyle: 'short',
-    });
-
-  return (
-    <>
-      <div className="page-heading">
-        <h1>Attendance</h1>
-        <p>Check-in tracking · {event.dates}</p>
-      </div>
-
-      <div className="stack">
-        {/* Empty state — shown until the first attendee is scanned in */}
-        {checked === 0 && (
-          <Card className="empty-state">
-            <div className="empty-icon">
-              <img src="/icons/icon-43.svg" width={36} height={36} alt="" />
-            </div>
-            <div>
-              <h2>No check-ins yet</h2>
-              <p style={{ paddingTop: 4 }}>
-                Attendees will appear here once they have been scanned in at the event entrance.
-              </p>
-            </div>
-            <Link className="button" href="/check-in">
-              <Icon name={icons.goToScanner} size={16} />
-              Go to Check-In Scanner
-            </Link>
-          </Card>
-        )}
-
-        <Card>
-          <p className="eyebrow">Event Overview</p>
-          <div className="overview-grid">
-            <div>
-              <strong>{expected}</strong>
-              <span>Expected</span>
-            </div>
-            <div>
-              <strong>{checked}</strong>
-              <span>Checked In</span>
-            </div>
-            <div>
-              <strong>{Math.max(expected - checked, 0)}</strong>
-              <span>Pending</span>
-            </div>
-          </div>
-        </Card>
-
-        <Card>
-          <p className="eyebrow">Role breakdown</p>
-          <dl className="details">
-            <div>
-              <dt>Total registered</dt>
-              <dd>{people.length}</dd>
-            </div>
-            <div>
-              <dt>Total attendees</dt>
-              <dd>{checked}</dd>
-            </div>
-            <div>
-              <dt>Attendance rate</dt>
-              <dd>{rate}%</dd>
-            </div>
-            {registrationRoles.map((r) => (
-              <div key={r}>
-                <dt>{r}</dt>
-                <dd>{people.filter((p) => p.role === r).length}</dd>
-              </div>
-            ))}
-          </dl>
-        </Card>
-
-        <Card>
-          <div className="row between">
-            <h2>Participants</h2>
-            <button className="text-button" onClick={refresh}>
-              Refresh
-            </button>
-          </div>
-          <div className="form-stack" style={{ paddingTop: 16 }}>
-            <div className="search-input">
-              <Search size={16} />
-              <input
-                aria-label="Search participants"
-                type="search"
-                placeholder="Search name or organisation…"
-                value={query}
-                onChange={(e) => setQuery(e.target.value)}
-              />
-            </div>
-            <div className="field">
-              <span>Role</span>
-              <Dropdown
-                name="role"
-                label="Filter by role"
-                onValueChange={setRole}
-                options={[
-                  { value: '', label: 'All roles' },
-                  ...registrationRoles.map((r) => ({ value: r, label: r })),
-                ]}
-              />
-            </div>
-            <div className="field">
-              <span>Attendance status</span>
-              <Dropdown
-                name="status"
-                label="Attendance status"
-                onValueChange={setStatus}
-                options={[
-                  { value: '', label: 'All participants' },
-                  { value: 'attended', label: 'Attended' },
-                  { value: 'pending', label: 'Not checked in' },
-                ]}
-              />
-            </div>
-          </div>
-
-          <div className="attendance-list" style={{ marginTop: 8 }}>
-            {filtered.map((p) => (
-              <div className="person" key={p.id}>
-                <div className="row between">
-                  <strong>
-                    {p.firstName} {p.lastName}
-                  </strong>
-                  <span className={`pill ${p.checkedInAt ? 'attended' : ''}`}>
-                    {p.checkedInAt ? 'Attended' : 'Registered'}
-                  </span>
-                </div>
-                <p>
-                  {p.organisation} · {p.role}
-                </p>
-                <small>
-                  Registered: {format(p.createdAt)}
-                  <br />
-                  Check-in: {p.checkedInAt ? format(p.checkedInAt) : 'Not checked in'}
-                </small>
-              </div>
-            ))}
-            {!filtered.length && (
-              <p className="muted" style={{ padding: '20px 0' }}>
-                No participants match these filters.
-              </p>
-            )}
-          </div>
-
-          <Link className="button full mt-4" href="/check-in">
-            Open Check-in Scanner
-          </Link>
-        </Card>
-
-        <Status error>{error}</Status>
-      </div>
-    </>
-  );
-}
-</file>
-
-<file path="src/components/check-in.tsx">
-'use client';
-
-import { useEffect, useRef, useState, useCallback } from 'react';
-import {
-  ScanLine,
-  CheckCircle2,
-  XCircle,
-  Clock,
-  MapPin,
-  Users,
-  RefreshCw,
-  Search,
-  Camera,
-  CameraOff,
-  Radio,
-} from 'lucide-react';
-
-import type { Registration, Session } from '@/lib/types';
-import { event, initials, nextSession } from '@/lib/data';
-import { Card, Status, requestJson } from './ui';
-
-/** "09:34 · 9 November 2026" in Harare time, from a real ISO check-in timestamp. */
-function stamp(iso: string | null) {
-  const d = iso ? new Date(iso) : new Date();
-  const time = d.toLocaleTimeString('en-GB', {
-    timeZone: 'Africa/Harare',
-    hour: '2-digit',
-    minute: '2-digit',
-    hour12: false,
-  });
-  const date = d.toLocaleDateString('en-GB', {
-    timeZone: 'Africa/Harare',
-    day: 'numeric',
-    month: 'long',
-    year: 'numeric',
-  });
-  return `${time} · ${date}`;
-}
-
-export function CheckIn({ demo, sessions }: { demo: boolean; sessions: Session[] }) {
-  const [code, setCode] = useState('');
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState('');
-  const [result, setResult] = useState<{ registration: Registration; already: boolean } | null>(
-    null,
-  );
-  const [failed, setFailed] = useState(false);
-  const [camera, setCamera] = useState(false);
-  const [failMessage, setFailMessage] = useState('Code is invalid or unregistered');
-  const [people, setPeople] = useState<Registration[]>([]);
-  const [query, setQuery] = useState('');
-  // Real count from /api/attendance — stays null until we have it (no made-up numbers).
-  const [count, setCount] = useState<number | null>(null);
-
-  const video = useRef<HTMLVideoElement>(null);
-  const controls = useRef<{ stop: () => void } | null>(null);
-  const scanning = useRef(false);
-  const generation = useRef(0);
-
-  const stop = useCallback(() => {
-    generation.current++;
-    controls.current?.stop();
-    controls.current = null;
-    const stream = video.current?.srcObject as MediaStream | null;
-    stream?.getTracks().forEach((track) => track.stop());
-    if (video.current) video.current.srcObject = null;
-    setCamera(false);
-  }, []);
-
-  useEffect(
-    () => () => {
-      generation.current++;
-      controls.current?.stop();
-      controls.current = null;
-      const stream = video.current?.srcObject as MediaStream | null;
-      stream?.getTracks().forEach((track) => track.stop());
-    },
-    [],
-  );
-
-  async function loadPeople() {
-    try {
-      const data = await requestJson('/api/attendance');
-      setPeople(data.registrations.filter((r: Registration) => r.role === 'Partner'));
-      return data.registrations as Registration[];
-    } catch {
-      return null;
-    }
-  }
-
-  useEffect(() => {
-    void loadPeople();
-  }, []);
-
-  async function scan(value: string, mode: 'code' | 'id' | 'sample' = 'code') {
-    if (scanning.current) return;
-    scanning.current = true;
-    setBusy(true);
-    setError('');
-    stop();
-
-    try {
-      const response = await fetch(mode === 'sample' ? '/api/demo-check-in' : '/api/check-in', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(mode === 'code' ? { code: value } : { id: value }),
-      });
-      const data = await response.json();
-
-      if (data.unrecognised) {
-        setFailMessage('Code is invalid or unregistered');
-        setFailed(true);
-        return;
-      }
-      if (!response.ok) throw new Error(data.error || 'Unable to check in.');
-
-      setResult(data);
-
-      const everyone = await loadPeople();
-      // attendance endpoint unavailable — hide the summary rather than guess
-      setCount(everyone ? everyone.filter((r) => r.checkedInAt).length : null);
-    } catch (e) {
-      if (e instanceof TypeError) {
-        setFailMessage('Network error. Check the connection and try again.');
-        setFailed(true);
-      } else setError((e as Error).message);
-    } finally {
-      scanning.current = false;
-      setBusy(false);
-      window.scrollTo({ top: 0, behavior: 'smooth' });
-    }
-  }
-
-  async function startCamera() {
-    setError('');
-    setCamera(true);
-    const current = ++generation.current;
-    try {
-      if (!navigator.mediaDevices?.getUserMedia) {
-        throw new Error(
-          'Camera access needs HTTPS or localhost. You can use manual code entry below.',
-        );
-      }
-      const { BrowserQRCodeReader } = await import('@zxing/browser');
-      if (current !== generation.current) return;
-      const reader = new BrowserQRCodeReader();
-      const c = await reader.decodeFromVideoDevice(undefined, video.current!, (decoded) => {
-        if (decoded && !scanning.current) void scan(decoded.getText());
-      });
-      if (current !== generation.current) c.stop();
-      else controls.current = c;
-    } catch {
-      if (current === generation.current) {
-        setCamera(false);
-        setError(
-          'Camera is unavailable or permission was denied. Check camera permissions, or enter the pass code below.',
-        );
-      }
-    }
-  }
-
-  function reset() {
-    setResult(null);
-    setFailed(false);
-    setCode('');
-    setQuery('');
-    setError('');
-  }
-
-  function retryScan() {
-    reset();
-    void startCamera();
-  }
-
-  function manualSearch() {
-    reset();
-    setTimeout(() => {
-      const box = document.getElementById('manual-search');
-      box?.scrollIntoView({ behavior: 'smooth', block: 'center' });
-      box?.focus();
-    }, 50);
-  }
-
-  /* ------------------------------------------------------------
-   * CHECK-IN FAILED  ("QR Code Not Recognized")
-   * ------------------------------------------------------------ */
-  if (failed) {
-    return (
-      <div className="stack">
-        <section className="hero failure hero-with-icon">
-          <span className="hero-icon">
-            <XCircle size={28} />
-          </span>
-          <div>
-            <p className="eyebrow">Check-In Failed</p>
-            <h1 style={{ paddingTop: 6 }}>QR Code Not Recognized</h1>
-            <p style={{ paddingTop: 4 }}>{failMessage}</p>
-          </div>
-        </section>
-
-        <Card>
-          <h2 className="eyebrow" style={{ marginBottom: 0 }}>
-            Possible reasons
-          </h2>
-          <ul className="reasons">
-            {[
-              'Invalid QR code',
-              'Duplicate QR code',
-              'Network error',
-              'Corrupted QR code',
-              'Participant not found',
-            ].map((reason) => (
-              <li key={reason}>
-                <img src="/icons/container-margin-2.svg" width={16} height={18} alt="" />
-                {reason}
-              </li>
-            ))}
-          </ul>
-        </Card>
-
-        <button className="button full" onClick={retryScan}>
-          <RefreshCw size={17} />
-          Retry Scan
-        </button>
-        <button className="button secondary full" onClick={manualSearch}>
-          <Search size={15} />
-          Manual Search
-        </button>
-        <button className="button secondary full" onClick={reset}>
-          <ScanLine size={17} />
-          Return to Scanner
-        </button>
-      </div>
-    );
-  }
-
-  /* ------------------------------------------------------------
-   * CHECKED IN SUCCESSFULLY
-   * ------------------------------------------------------------ */
-  if (result) {
-    const r = result.registration;
-    const next = nextSession(sessions);
-
-    return (
-      <div className="stack">
-        <section className="hero success hero-with-icon">
-          <span className="hero-icon">
-            <CheckCircle2 size={28} />
-          </span>
-          <div>
-            <p className="eyebrow">{result.already ? 'Already checked in' : 'Check-in complete'}</p>
-            <h1 style={{ paddingTop: 6 }}>
-              {result.already ? 'Already Checked In' : 'Participant Successfully Checked In'}
-            </h1>
-            <p className="row" style={{ gap: 6, paddingTop: 6 }}>
-              <Clock size={12} />
-              {stamp(r.checkedInAt)}
-            </p>
-          </div>
-        </section>
-
-        <Card>
-          <div className="row">
-            <span className="avatar large">{initials(`${r.firstName} ${r.lastName}`)}</span>
-            <div>
-              <h2 style={{ fontSize: 18 }}>
-                {r.firstName} {r.lastName}
-              </h2>
-              <p className="muted" style={{ fontSize: 13, paddingBottom: 6 }}>
-                {r.organisation}
-              </p>
-              <span className="badge">{r.role}</span>
-            </div>
-          </div>
-
-          <dl className="details" style={{ marginTop: 16 }}>
-            <div>
-              <dt>Full Name</dt>
-              <dd>
-                {r.firstName} {r.lastName}
-              </dd>
-            </div>
-            <div>
-              <dt>Organisation</dt>
-              <dd>{r.organisation}</dd>
-            </div>
-            <div>
-              <dt>Role</dt>
-              <dd>{r.role}</dd>
-            </div>
-            <div>
-              <dt>Registration Status</dt>
-              <dd>Registered</dd>
-            </div>
-            <div>
-              <dt>Check-In Time</dt>
-              <dd>{stamp(r.checkedInAt)}</dd>
-            </div>
-          </dl>
-
-          {next && (
-            <div className="next-session">
-              <div>
-                <span className="eyebrow">
-                  <Users size={11} />
-                  Next Session
-                </span>
-                <strong>{next.title.replace(/^[^:]*:\s*/, '')}</strong>
-              </div>
-              <div>
-                <span className="eyebrow">
-                  <MapPin size={11} />
-                  Venue
-                </span>
-                <strong>{next.venue}</strong>
-              </div>
-            </div>
-          )}
-        </Card>
-
-        <Card>
-          <h2 className="eyebrow" style={{ marginBottom: 0 }}>
-            <Radio size={12} />
-            Live Event Status
-          </h2>
-          {next && (
-            <div className="live-status">
-              <span className="live-dot" />
-              <strong>
-                {next.title.replace(/^[^:]*:\s*/, '')} starting at {next.time}
-              </strong>
-            </div>
-          )}
-          {count !== null && (
-            <>
-              <p className="muted attendance-summary">
-                {count} of {event.expected} attendees checked in
-                {next ? ` · ${next.venue}` : ''}
-              </p>
-              <div className="attendance-progress">
-                <div
-                  className="attendance-progress-fill"
-                  style={{ width: `${Math.min((count / event.expected) * 100, 100)}%` }}
-                />
-              </div>
-            </>
-          )}
-        </Card>
-
-        <Status error>{error}</Status>
-
-        <button className="button full" onClick={reset}>
-          <ScanLine size={18} />
-          Scan Next Attendee
-        </button>
-      </div>
-    );
-  }
-
-  /* ------------------------------------------------------------
-   * SCANNER  (Figma: "Event Check-In")
-   * ------------------------------------------------------------ */
-  return (
-    <>
-      <div className="page-heading">
-        <h1>Event Check-In</h1>
-        <p>Scan an attendee QR code to check them in</p>
-      </div>
-
-      <div className="stack">
-        <section className="scanner">
-          <div className="camera-view">
-            <video
-              ref={video}
-              autoPlay
-              playsInline
-              muted
-              aria-label="QR scanner camera"
-              className={camera ? '' : 'hidden'}
-            />
-            <div className="scan-frame">
-              <i />
-              <i />
-              <i />
-              <i />
-            </div>
-            <p>Position QR code within the frame</p>
-          </div>
-          <div className="scanner-footer">
-            <ScanLine size={20} />
-            <span>
-              {camera
-                ? 'Hold camera steady · Auto-scans in 1–2 seconds'
-                : 'Start the camera to scan an entry pass'}
-            </span>
-          </div>
-        </section>
-
-        <button
-          className="button secondary full"
-          disabled={busy}
-          onClick={camera ? stop : startCamera}
-        >
-          {camera ? <CameraOff size={18} /> : <Camera size={18} />}
-          {camera ? 'Stop Camera' : 'Start Camera'}
-        </button>
-
-        <Status error>{error}</Status>
-
-        {demo && (
-          <Card>
-            <h2 className="eyebrow" style={{ marginBottom: 0 }}>
-              Simulate QR Scan
-            </h2>
-            {[
-              {
-                id: 'collin',
-                name: 'Collin Manyande',
-                role: 'Partner',
-                code: 'OAK-2026-7842-XKPH',
-              },
-              { id: 'kayden', name: 'Kayden Mamu', role: 'Partner', code: 'OAK-2026-5592-FWBN' },
-            ].map((p) => (
-              <button
-                disabled={busy}
-                className="sample-person"
-                key={p.id}
-                onClick={() => scan(p.id, 'sample')}
-              >
-                <span className="avatar small">{initials(p.name)}</span>
-                <span>
-                  <strong>{p.name}</strong>
-                  <small>{p.code}</small>
-                </span>
-                <span className="badge">{p.role}</span>
-              </button>
-            ))}
-          </Card>
-        )}
-
-        <Card>
-          <h2 className="eyebrow" style={{ marginBottom: 12 }}>
-            Manual Search
-          </h2>
-          <div className="search-input">
-            <Search size={16} />
-            <input
-              id="manual-search"
-              aria-label="Search partners by name or organisation"
-              type="search"
-              placeholder="Search partner name or organisation…"
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              autoComplete="off"
-            />
-          </div>
-          {query.trim() && (
-            <div className="attendance-list" style={{ marginTop: 8 }}>
-              {people
-                .filter((p) =>
-                  `${p.firstName} ${p.lastName} ${p.organisation}`
-                    .toLowerCase()
-                    .includes(query.trim().toLowerCase()),
-                )
-                .slice(0, 8)
-                .map((p) => (
-                  <div className="person" key={p.id}>
-                    <div className="row between">
-                      <strong>
-                        {p.firstName} {p.lastName}
-                      </strong>
-                      <span className={`pill ${p.checkedInAt ? 'attended' : ''}`}>
-                        {p.checkedInAt ? 'Attended' : 'Registered'}
-                      </span>
-                    </div>
-                    <p>
-                      {p.organisation} · {p.role}
-                    </p>
-                    <button
-                      className="button full"
-                      style={{ marginTop: 8 }}
-                      disabled={busy}
-                      onClick={() => scan(p.id, 'id')}
-                    >
-                      {p.checkedInAt ? 'View Check-In' : 'Check In'}
-                    </button>
-                  </div>
-                ))}
-              {!people.some((p) =>
-                `${p.firstName} ${p.lastName} ${p.organisation}`
-                  .toLowerCase()
-                  .includes(query.trim().toLowerCase()),
-              ) && (
-                <p className="muted" style={{ padding: '12px 0' }}>
-                  Participant not found.
-                </p>
-              )}
-            </div>
-          )}
-        </Card>
-
-        <Card>
-          <h2 className="eyebrow" style={{ marginBottom: 12 }}>
-            Manual Code Entry
-          </h2>
-          <form
-            className="row manual-entry"
-            onSubmit={(e) => {
-              e.preventDefault();
-              void scan(code);
-            }}
-          >
-            <label className="sr-only" htmlFor="entry-code">
-              Entry pass code
-            </label>
-            <input
-              id="entry-code"
-              value={code}
-              onChange={(e) => setCode(e.target.value)}
-              placeholder="OAK-2026-XXXX-XXXX"
-              required
-              maxLength={90}
-              autoComplete="off"
-            />
-            <button className="button" disabled={busy}>
-              {busy ? 'Checking…' : 'Check'}
-            </button>
-          </form>
-        </Card>
-      </div>
-    </>
-  );
 }
 </file>
 
@@ -4411,465 +3344,6 @@ export function Programme({
 }
 </file>
 
-<file path="src/components/registration.tsx">
-'use client';
-import { useEffect, useState } from 'react';
-import Link from 'next/link';
-import QRCode from 'qrcode';
-import { CheckCircle2, Download, RotateCcw } from 'lucide-react';
-import { Card, Status, requestJson } from './ui';
-import type { Registration } from '@/lib/types';
-import { event } from '@/lib/data';
-import { registrationRoles } from '@/lib/roles';
-import { Dropdown } from './dropdown';
-
-// Stat icons exported from Figma (public/icons): users, calendar, layers
-const stats = [
-  { icon: '/icons/icon.svg', value: '110+', label: 'Attendees' },
-  { icon: '/icons/icon-2.svg', value: '24', label: 'Sessions' },
-  { icon: '/icons/icon-3.svg', value: '38', label: 'Partners' },
-];
-
-export function RegistrationPage({ initial }: { initial: Registration | null }) {
-  const [entry, setEntry] = useState(initial);
-  const [error, setError] = useState('');
-  const [busy, setBusy] = useState(false);
-  const [qr, setQr] = useState('');
-
-  useEffect(() => {
-    let active = true;
-    if (entry?.role === 'Partner')
-      QRCode.toDataURL(entry.code, {
-        width: 420,
-        margin: 4,
-        color: { dark: '#162e55', light: '#ffffff' },
-        errorCorrectionLevel: 'M',
-      })
-        .then((url) => {
-          if (active) setQr(url);
-        })
-        .catch(() =>
-          setError('Unable to create the QR image. Your entry code below remains valid.'),
-        );
-    return () => {
-      active = false;
-    };
-  }, [entry]);
-
-  async function submit(e: React.FormEvent<HTMLFormElement>) {
-    e.preventDefault();
-    setError('');
-    setBusy(true);
-    const form = new FormData(e.currentTarget);
-    try {
-      const data = await requestJson('/api/register', {
-        ...Object.fromEntries(form),
-        consent: form.get('consent') === 'on',
-      });
-      window.location.assign(
-        data.registration.role === 'Partner'
-          ? '/qr-code'
-          : data.registration.role === 'Coordination Team'
-            ? '/check-in'
-            : '/programme',
-      );
-      window.scrollTo({ top: 0, behavior: 'smooth' });
-    } catch (e) {
-      setError((e as Error).message);
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  /* ------------------------------------------------------------------
-   * REGISTRATION COMPLETE  (Figma: "Registration Complete" / entry pass)
-   * ------------------------------------------------------------------ */
-  if (entry)
-    return (
-      <div className="stack">
-        <section className="hero hero-with-icon">
-          <span className="hero-icon">
-            <CheckCircle2 size={28} />
-          </span>
-          <div>
-            <p className="eyebrow" style={{ paddingTop: 0 }}>
-              Registration Complete
-            </p>
-            <h1>
-              You’re Registered,
-              <br />
-              {entry.firstName}!
-            </h1>
-            <p>{entry.organisation}</p>
-          </div>
-        </section>
-
-        <p className="muted" style={{ fontSize: 13 }}>
-          {entry.emailStatus === 'sent'
-            ? 'A confirmation email with your QR code has been sent.'
-            : 'Your registration is saved. Download your QR code below; confirmation email is currently unavailable.'}
-        </p>
-
-        <Card className="entry-pass">
-          <p className="eyebrow">Your Entry Pass</p>
-          <div className="qr-frame">
-            {qr ? (
-              <img src={qr} width={230} height={230} alt="Your event entry QR code" />
-            ) : (
-              <p style={{ width: 230, height: 230, display: 'grid', placeItems: 'center' }}>
-                Preparing QR code…
-              </p>
-            )}
-          </div>
-          <p className="entry-code">{entry.code}</p>
-          <p>Present at event entrance for check-in</p>
-        </Card>
-
-        <Card>
-          <h2 className="eyebrow" style={{ marginBottom: 4 }}>
-            Registration Details
-          </h2>
-          <dl className="details">
-            {[
-              ['Name', `${entry.firstName} ${entry.lastName}`],
-              ['Organisation', entry.organisation],
-              ['Registration ID', entry.code || '—'],
-              ['Role', entry.role],
-              ['Email', entry.email],
-              ['Event', `OAK Foundation ${event.name}`],
-              ['Event Dates', event.dates],
-              ['Location', `${event.location}, Zimbabwe`],
-            ].map(([label, value]) => (
-              <div key={label}>
-                <dt>{label}</dt>
-                <dd>{value}</dd>
-              </div>
-            ))}
-          </dl>
-        </Card>
-
-        <Status error>{error}</Status>
-
-        <a
-          className="button full"
-          download={`OAK-entry-pass-${entry.firstName}.png`}
-          href={qr || undefined}
-          aria-disabled={!qr}
-        >
-          <Download size={18} />
-          Download QR Code
-        </a>
-        <button
-          className="text-button"
-          onClick={() => {
-            setEntry(null);
-            setQr('');
-          }}
-        >
-          <RotateCcw size={16} />
-          Register another attendee
-        </button>
-      </div>
-    );
-
-  /* ------------------------------------------------------------------
-   * REGISTRATION FORM
-   * ------------------------------------------------------------------ */
-  return (
-    <div className="stack">
-      <section className="hero">
-        <h1>
-          Partner
-          <br />
-          Convening 2026
-        </h1>
-        <p>
-          {event.location} · {event.dates}
-        </p>
-      </section>
-
-      <div className="stats-grid">
-        {stats.map((s) => (
-          <Card key={s.label} className="stat-card">
-            <img src={s.icon} width={16} height={16} alt="" />
-            <strong>{s.value}</strong>
-            <span>{s.label}</span>
-          </Card>
-        ))}
-      </div>
-
-      <Card>
-        <h2>Registration Form</h2>
-        <form onSubmit={submit} className="form-stack">
-          <div className="form-row">
-            <Field
-              label="First Name"
-              name="firstName"
-              placeholder="Maria"
-              required
-              autoComplete="given-name"
-            />
-            <Field
-              label="Last Name"
-              name="lastName"
-              placeholder="Schmidt"
-              required
-              autoComplete="family-name"
-            />
-          </div>
-          <Field
-            label="Organisation"
-            name="organisation"
-            placeholder="Your organisation name"
-            required
-            autoComplete="organization"
-          />
-          <Field label="Sub-Partner / Programme Area" name="programmeArea" placeholder="Optional" />
-          <div className="field">
-            <span>
-              Role / Capacity <em>*</em>
-            </span>
-            <Dropdown
-              name="role"
-              label="Role / Capacity"
-              required
-              options={[
-                { value: '', label: 'Select your role', disabled: true },
-                ...registrationRoles.map((role) => ({ value: role, label: role })),
-              ]}
-            />
-          </div>
-          <Field
-            label="Email Address"
-            name="email"
-            placeholder="you@organisation.org"
-            type="email"
-            required
-            autoComplete="email"
-          />
-          <Field
-            label="Phone Number"
-            name="phone"
-            placeholder="+263 xx xxx xxxx"
-            type="tel"
-            autoComplete="tel"
-            required
-          />
-
-          <fieldset className="requirements">
-            <legend className="sr-only">Requirements</legend>
-            <p className="eyebrow">Requirements</p>
-            <Field
-              label="Dietary Requirements"
-              name="dietary"
-              placeholder="e.g. Vegetarian, Halal, Gluten-free"
-              maxLength={500}
-            />
-            <Field
-              label="Accessibility Requirements"
-              name="accessibility"
-              placeholder="e.g. Wheelchair access, hearing loop"
-              maxLength={500}
-            />
-            <Field
-              label="Travel Requirements"
-              name="travel"
-              placeholder="e.g. Flight from London, airport pickup"
-              maxLength={500}
-            />
-            <Field
-              label="Accommodation Requirements"
-              name="accommodation"
-              placeholder="e.g. Hotel needed, ground-floor room"
-              maxLength={500}
-            />
-          </fieldset>
-
-          <label className="consent">
-            <input name="consent" type="checkbox" required />
-            <span>
-              I agree to OAK Foundation’s{' '}
-              <Link href="/privacy" target="_blank">
-                privacy policy
-              </Link>{' '}
-              and consent to my registration data being used for event coordination.
-            </span>
-          </label>
-
-          <div className="honeypot" aria-hidden="true">
-            <label>
-              Website
-              <input name="website" tabIndex={-1} autoComplete="off" />
-            </label>
-          </div>
-
-          <Status error>{error}</Status>
-          <button className="button full" disabled={busy}>
-            {busy ? 'Registering…' : 'Register & Generate QR Code'}
-          </button>
-        </form>
-      </Card>
-
-      <p className="privacy-footer">
-        Your data is secured and handled by OAK Foundation in accordance with GDPR.
-      </p>
-    </div>
-  );
-}
-
-function Field({
-  label,
-  name,
-  required = false,
-  ...props
-}: {
-  label: string;
-  name: string;
-  required?: boolean;
-} & React.InputHTMLAttributes<HTMLInputElement>) {
-  return (
-    <label className="field">
-      <span>
-        {label} {required && <em>*</em>}
-      </span>
-      <input name={name} required={required} maxLength={160} {...props} />
-    </label>
-  );
-}
-</file>
-
-<file path="src/components/shell.tsx">
-'use client';
-
-import Link from 'next/link';
-import { usePathname } from 'next/navigation';
-import { LogOut, ShieldCheck } from 'lucide-react';
-import type { ReactNode } from 'react';
-import { Icon, icons } from './icon';
-import { event } from '@/lib/data';
-
-type NavItem = { href: string; label: string; icon: string };
-
-export function Shell({
-  children,
-  demo,
-  role,
-}: {
-  children: ReactNode;
-  demo: boolean;
-  role: string | null;
-}) {
-  const path = usePathname();
-
-  const staff = role === 'Coordination Team';
-
-  // Same role-based access matrix as before — only the look changed.
-  const nav: NavItem[] = [
-    { href: '/', label: 'Register', icon: icons.register },
-    ...(staff ? [{ href: '/check-in', label: 'Check In', icon: icons.checkIn }] : []),
-    ...(role === 'Partner' ? [{ href: '/qr-code', label: 'My QR Code', icon: icons.checkIn }] : []),
-    ...(role && role !== 'Partner'
-      ? [{ href: '/programme', label: 'Programme', icon: icons.programme }]
-      : []),
-    ...(role ? [{ href: '/partners', label: 'Partners', icon: icons.partners }] : []),
-    ...(staff ? [{ href: '/attendance', label: 'Attendance', icon: icons.attendance }] : []),
-  ];
-
-  const isActive = (href: string) => (href === '/' ? path === '/' : path.startsWith(href));
-
-  return (
-    <>
-      <a className="skip-link" href="#main">
-        Skip to content
-      </a>
-
-      {/* MOBILE HEADER (navy bar: logo · divider · event name) */}
-      <header className="mobile-header">
-        <Link href="/" aria-label="OAK Foundation home" className="row" style={{ gap: 12 }}>
-          <img src="/Logo-Oak-Foundation.svg" width={45} height={28} alt="OAK Foundation" />
-          <span className="divider" aria-hidden="true" />
-          <span className="brand-title">{event.name}</span>
-        </Link>
-      </header>
-
-      {/* DESKTOP SIDEBAR */}
-      <aside className="sidebar">
-        <Link href="/" className="sidebar-brand" aria-label="OAK Foundation home">
-          <img src="/Logo-Oak-Foundation.svg" width={85} height={53} alt="OAK Foundation" />
-          <span className="brand-title">{event.name}</span>
-        </Link>
-
-        <nav aria-label="Main navigation">
-          <p className="eyebrow nav-role">{role ?? 'Register to access the event'}</p>
-          {nav.map(({ href, label, icon }) => (
-            <Link
-              key={href}
-              href={href}
-              aria-current={isActive(href) ? 'page' : undefined}
-              className={`nav-link ${isActive(href) ? 'active' : ''}`}
-            >
-              <Icon name={icon} size={18} />
-              <span>{label}</span>
-            </Link>
-          ))}
-        </nav>
-
-        <div className="sidebar-footer">
-          <img src="/icons/container-30.svg" width={32} height={32} alt="" />
-          <div>
-            <strong>{event.location}, Zimbabwe</strong>
-            <small>{event.dates}</small>
-          </div>
-        </div>
-      </aside>
-
-      {/* MAIN CONTENT */}
-      <div className="main-shell">
-        <main id="main">
-          {children}
-
-          <footer className="utility-footer">
-            {demo && <span className="demo-label">Local demo · sample event content</span>}
-
-            <Link href={staff ? '/attendance' : '/staff'}>
-              <ShieldCheck size={13} />
-              {staff ? 'Staff area' : 'Staff sign-in'}
-            </Link>
-
-            {staff && !demo && (
-              <button
-                onClick={async () => {
-                  await fetch('/api/auth/sign-out', { method: 'POST' });
-                  window.location.href = '/';
-                }}
-              >
-                <LogOut size={13} />
-                Sign out
-              </button>
-            )}
-          </footer>
-        </main>
-      </div>
-
-      {/* MOBILE BOTTOM NAV (frosted bar, 9px labels) */}
-      <nav className="bottom-nav" aria-label="Mobile navigation">
-        {nav.map(({ href, label, icon }) => (
-          <Link
-            key={href}
-            href={href}
-            aria-current={isActive(href) ? 'page' : undefined}
-            className={isActive(href) ? 'active' : ''}
-          >
-            <Icon name={icon} size={19} />
-            <span>{label}</span>
-          </Link>
-        ))}
-      </nav>
-    </>
-  );
-}
-</file>
-
 <file path="src/components/staff-login.tsx">
 'use client';
 import Link from 'next/link';
@@ -5090,87 +3564,6 @@ export async function createClient() {
       },
     },
   });
-}
-</file>
-
-<file path="src/lib/access.ts">
-import 'server-only';
-import { redirect } from 'next/navigation';
-import { myRegistration, staffUser } from './repository';
-export async function currentRole() {
-  if (await staffUser()) return 'Coordination Team';
-  return (await myRegistration())?.role ?? null;
-}
-export async function requirePage(roles: string[]) {
-  const role = await currentRole();
-  if (!role) redirect('/');
-  if (!roles.includes(role)) redirect(role === 'Partner' ? '/qr-code' : '/programme');
-}
-export const programmeRoles = ['OAK Staff', 'Coordination Team', 'Presenter', 'Observer'];
-// Requirements section 8: the Partners page is open to all five roles.
-export const partnersRoles = ['Partner', ...programmeRoles];
-</file>
-
-<file path="src/lib/api.ts">
-import { NextRequest, NextResponse } from 'next/server';
-import { isConfigured } from './supabase/config';
-import { staffUser } from './repository';
-import { currentRole } from './access';
-
-type RateWindow = { hits: number[] };
-const runtime = globalThis as typeof globalThis & { oakRateLimits?: Map<string, RateWindow> };
-
-export class RateLimitError extends Error {
-  constructor() {
-    super('Too many attempts. Please wait a few minutes and try again.');
-  }
-}
-
-function clientAddress(request: NextRequest) {
-  return (
-    request.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ||
-    request.headers.get('x-real-ip') ||
-    'unknown'
-  );
-}
-export function fail(error: unknown, status = 400) {
-  return NextResponse.json(
-    { error: error instanceof Error ? error.message : 'Something went wrong. Please try again.' },
-    { status },
-  );
-}
-export function guard(request: NextRequest) {
-  if (!isConfigured() && !['localhost', '127.0.0.1', '[::1]'].includes(request.nextUrl.hostname))
-    throw new Error('Connect Supabase before using this app on a public host.');
-  const origin = request.headers.get('origin');
-  if (origin && new URL(origin).host !== request.headers.get('host'))
-    throw new Error('Request origin is not allowed.');
-}
-
-/** A per-instance sliding-window limit for endpoints that create event records. */
-export function rateLimit(request: NextRequest, bucket: string, limit: number, windowMs: number) {
-  const now = Date.now();
-  const key = `${bucket}:${clientAddress(request)}`;
-  const limits = (runtime.oakRateLimits ??= new Map<string, RateWindow>());
-  const window = limits.get(key) ?? { hits: [] };
-  window.hits = window.hits.filter((hit) => hit > now - windowMs);
-  if (window.hits.length >= limit) {
-    limits.set(key, window);
-    throw new RateLimitError();
-  }
-  window.hits.push(now);
-  limits.set(key, window);
-
-  // Bound the process-local cache in long-running local or server processes.
-  if (limits.size > 500) {
-    for (const [storedKey, storedWindow] of limits) {
-      if (!storedWindow.hits.some((hit) => hit > now - windowMs)) limits.delete(storedKey);
-    }
-  }
-}
-export async function requireStaff() {
-  if ((await currentRole()) !== 'Coordination Team')
-    throw new Error('Coordination Team access is required.');
 }
 </file>
 
@@ -6811,6 +5204,1691 @@ export default config;
 export default { plugins: { '@tailwindcss/postcss': {} } };
 </file>
 
+<file path="tsconfig.json">
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["dom", "dom.iterable", "esnext"],
+    "allowJs": true,
+    "skipLibCheck": true,
+    "strict": true,
+    "noEmit": true,
+    "esModuleInterop": true,
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "jsx": "react-jsx",
+    "incremental": true,
+    "plugins": [{ "name": "next" }],
+    "paths": { "@/*": ["./src/*"] }
+  },
+  "include": [
+    "next-env.d.ts",
+    "**/*.ts",
+    "**/*.tsx",
+    ".next/types/**/*.ts",
+    ".next/dev/types/**/*.ts"
+  ],
+  "exclude": ["node_modules"]
+}
+</file>
+
+<file path="VERIFICATION.md">
+# Requirements verification
+
+Compared the app with all 12 pages of `OAK Foundation Event Attendance Platform Requirements.pdf` and visually inspected its final access matrix. Used that matrix for the conflicting Partner-directory permission.
+
+Verified on 14 September 2026:
+- Production build and TypeScript checks pass.
+- Seven validation/QR tests pass.
+- Local HTTP smoke workflow passes all five roles and 25 page access checks, coordination-only API access, Partner-only QR generation, original timestamp on duplicate check-in, private note creation/editing, and cross-user note isolation.
+- Browser registration as Coordination Team redirects to Check-in and exposes Check-in, Programme, Partners, and Attendance in desktop/mobile navigation.
+- Attendance role filter correctly narrows the participant list.
+- All four pages load; 400px mobile layout has no horizontal page overflow.
+- Exact role choices and common dropdown styling are retained.
+
+Preview is left as the synthetic Demo Coordinator. Automated requirements test rows/notes were removed; existing user data was retained.
+
+Not verified with external credentials: live Supabase migration/execution and confirmation email delivery. Physical camera scanning was not exercised in this pass. Event resource files, official partner logos and unspecified profile details were not supplied; reference placeholders remain as described in README.md.
+
+New Supabase installations must run migrations 001 and 002, then seed.sql. Existing installations must run migration 002. Email configuration is documented in README.md and .env.example.
+</file>
+
+<file path="scripts/http-smoke.mjs">
+import assert from 'node:assert/strict';
+const base = 'http://127.0.0.1:3000';
+const home = await fetch(base).then((r) => r.text());
+assert(home.includes('Local demo'), 'Run only against local demo');
+const run = Date.now();
+const roles = ['Partner', 'OAK Staff', 'Coordination Team', 'Presenter', 'Observer'];
+const users = [];
+async function call(path, cookie, body) {
+  const r = await fetch(base + path, {
+    method: body ? 'POST' : 'GET',
+    redirect: 'manual',
+    headers: { 'Content-Type': 'application/json', ...(cookie ? { cookie } : {}) },
+    ...(body ? { body: JSON.stringify(body) } : {}),
+  });
+  return r;
+}
+for (const [i, role] of roles.entries()) {
+  const r = await call('/api/register', '', {
+    firstName: 'Requirements QA',
+    lastName: String(i),
+    organisation: 'Synthetic Test',
+    email: `requirements-${run}-${i}@example.test`,
+    phone: '+263000000000',
+    role,
+    consent: true,
+    accommodation: 'Test room',
+    travel: 'Test travel',
+  });
+  assert.equal(r.status, 201, await r.clone().text());
+  const { registration } = await r.json();
+  const cookie = r.headers.get('set-cookie').split(';')[0];
+  assert.equal(registration.sessionToken, undefined);
+  assert.equal(Boolean(registration.code), role === 'Partner');
+  users.push({ cookie, registration });
+  for (const page of ['/check-in', '/attendance', '/programme', '/partners', '/qr-code']) {
+    const allowed =
+      page === '/qr-code'
+        ? role === 'Partner'
+        : ['/check-in', '/attendance'].includes(page)
+          ? role === 'Coordination Team'
+          : page === '/partners'
+            ? true
+            : role !== 'Partner';
+    const response = await call(page, cookie);
+    const html = await response.text();
+    const redirected = response.status === 307 || html.includes('NEXT_REDIRECT');
+    assert.equal(redirected, !allowed, `${role} ${page}`);
+  }
+  assert.equal(
+    (await call('/api/attendance', cookie)).status,
+    role === 'Coordination Team' ? 200 : 403,
+  );
+}
+assert.equal((await call('/api/attendance', '')).status, 403);
+const partner = users[0],
+  coordinator = users[2],
+  presenter = users[3];
+const first = await call('/api/check-in', coordinator.cookie, {
+  code: partner.registration.code,
+}).then((r) => r.json());
+assert.equal(first.already, false);
+assert.equal(first.registration.sessionToken, undefined);
+const again = await call('/api/check-in', coordinator.cookie, {
+  code: partner.registration.code,
+}).then((r) => r.json());
+assert.equal(again.already, true);
+assert.equal(first.registration.checkedInAt, again.registration.checkedInAt);
+assert.equal(
+  (await call('/api/check-in', presenter.cookie, { code: partner.registration.code })).status,
+  403,
+);
+assert.equal((await call('/api/check-in', coordinator.cookie, { code: 'invalid' })).status, 404);
+// Manual Search check-in by participant id
+const byId = await call('/api/check-in', coordinator.cookie, { id: partner.registration.id }).then(
+  (r) => r.json(),
+);
+assert.equal(byId.already, true);
+assert.equal(byId.registration.checkedInAt, first.registration.checkedInAt);
+assert.equal(
+  (await call('/api/check-in', coordinator.cookie, { id: presenter.registration.id })).status,
+  404,
+);
+assert.equal(
+  (await call('/api/check-in', presenter.cookie, { id: partner.registration.id })).status,
+  403,
+);
+const note = await call('/api/notes', presenter.cookie, {
+  text: 'Private requirements test note',
+  day: 1,
+  sessionId: 'opening',
+}).then((r) => r.json());
+assert(note.note?.id, JSON.stringify(note));
+const edit = await call('/api/notes', presenter.cookie, {
+  id: note.note.id,
+  text: 'Edited private requirements note',
+  day: 1,
+  sessionId: 'opening',
+}).then((r) => r.json());
+assert.equal(edit.note.text, 'Edited private requirements note');
+assert.equal(
+  (
+    await call('/api/notes', coordinator.cookie, {
+      id: note.note.id,
+      text: 'Cross-user edit blocked',
+      day: 1,
+      sessionId: 'opening',
+    })
+  ).status,
+  400,
+);
+const other = await call('/programme?tab=docs', users[4].cookie).then((r) => r.text());
+assert(!other.includes('Edited private requirements note'));
+console.log(
+  'PASS: all five role journeys, 25 page access checks, API access, Partner-only QR, duplicate check-in, note editing and privacy',
+);
+</file>
+
+<file path="src/app/api/attendance/route.ts">
+import { NextRequest, NextResponse } from 'next/server';
+import { allRegistrations } from '@/lib/repository';
+import { currentRole } from '@/lib/access';
+import { guard, fail } from '@/lib/api';
+
+export async function GET(request: NextRequest) {
+  try {
+    guard(request);
+    if ((await currentRole()) !== 'Coordination Team')
+      return fail(new Error('Coordination Team access is required.'), 403);
+
+    const registrations = (await allRegistrations()).map(
+      ({ id, firstName, lastName, organisation, role, createdAt, checkedInAt }) => ({
+        id,
+        firstName,
+        lastName,
+        organisation,
+        role,
+        createdAt,
+        checkedInAt,
+      }),
+    );
+    return NextResponse.json({ registrations }, { headers: { 'Cache-Control': 'no-store' } });
+  } catch (e) {
+    return fail(e);
+  }
+}
+</file>
+
+<file path="src/app/api/check-in/route.ts">
+import { NextRequest, NextResponse } from 'next/server';
+import { checkIn, allRegistrations } from '@/lib/repository';
+import { currentRole } from '@/lib/access';
+import { codeSchema } from '@/lib/validation';
+import { guard, fail } from '@/lib/api';
+
+export async function POST(request: NextRequest) {
+  try {
+    guard(request);
+    if ((await currentRole()) !== 'Coordination Team')
+      return fail(new Error('Coordination Team access is required.'), 403);
+
+    const body = await request.json();
+    // Scanner / manual code entry send `code`; Manual Search sends the participant `id`.
+    const raw =
+      typeof body?.id === 'string'
+        ? (await allRegistrations()).find((r) => r.id === body.id)?.code
+        : body?.code;
+    const code = codeSchema.safeParse(raw);
+    if (!code.success) return NextResponse.json({ unrecognised: true }, { status: 404 });
+
+    const result = await checkIn(code.data);
+    if (!result) return NextResponse.json({ unrecognised: true }, { status: 404 });
+
+    return NextResponse.json({
+      ...result,
+      registration: { ...result.registration, sessionToken: undefined },
+    });
+  } catch (e) {
+    return fail(e);
+  }
+}
+</file>
+
+<file path="src/app/api/notes/route.ts">
+import { NextRequest, NextResponse } from 'next/server';
+import { currentRole, programmeRoles } from '@/lib/access';
+import { addNote, updateNote, myRegistration, staffUser } from '@/lib/repository';
+import { noteSchema } from '@/lib/validation';
+import { guard, fail } from '@/lib/api';
+import { z } from 'zod';
+
+// The owner is always taken from the server-side session, never from the request body.
+const bodySchema = noteSchema
+  .omit({ name: true, organisation: true })
+  .extend({ id: z.string().min(1).max(160).optional() });
+
+export async function POST(request: NextRequest) {
+  try {
+    guard(request);
+    if (!programmeRoles.includes((await currentRole()) ?? ''))
+      return fail(new Error('Programme access is required.'), 403);
+
+    const parsed = bodySchema.safeParse(await request.json());
+    if (!parsed.success) return fail(new Error(parsed.error.issues[0]?.message ?? 'Invalid note.'));
+    const { id, ...fields } = parsed.data;
+
+    const registration = await myRegistration();
+    const staff = registration ? null : await staffUser();
+    const ownerId = registration?.id ?? staff?.id;
+    if (!ownerId) return fail(new Error('Register or sign in to save notes.'), 401);
+
+    const input = {
+      ...fields,
+      ownerId,
+      name: registration ? `${registration.firstName} ${registration.lastName}` : 'Coordination Team',
+      organisation: registration?.organisation ?? 'OAK Foundation',
+    };
+
+    const note = id
+      ? await updateNote(id, ownerId, input)
+      : await addNote(input, registration ? 'participant' : 'admin');
+    return NextResponse.json({ note });
+  } catch (e) {
+    return fail(e);
+  }
+}
+</file>
+
+<file path="src/app/api/register/route.ts">
+import { NextRequest, NextResponse } from 'next/server';
+import { registrationSchema } from '@/lib/validation';
+import { register, recordEmailStatus } from '@/lib/repository';
+import { sendConfirmation } from '@/lib/confirmation-email';
+import { secretMatches } from '@/lib/security';
+import { guard, fail, rateLimit, RateLimitError } from '@/lib/api';
+
+export async function POST(request: NextRequest) {
+  try {
+    guard(request);
+    rateLimit(request, 'register', 10, 15 * 60 * 1000);
+
+    const parsed = registrationSchema.safeParse(await request.json());
+    if (!parsed.success) return fail(new Error(parsed.error.issues[0]?.message ?? 'Invalid form.'));
+
+    const { staffAccessCode, staff_access_code, ...input } = parsed.data;
+
+    // Optional gate for the Coordination Team role. Only enforced when STAFF_ACCESS_CODE is set.
+    if (
+      input.role === 'Coordination Team' &&
+      !secretMatches(staffAccessCode ?? staff_access_code ?? '', process.env.STAFF_ACCESS_CODE)
+    )
+      return fail(new Error('That staff access code is not correct.'), 403);
+
+    const entry = await register(input);
+
+    // Partners get the QR email; other roles return 'not-applicable'.
+    await recordEmailStatus(entry, await sendConfirmation(entry));
+
+    const { sessionToken, ...registration } = entry;
+    const response = NextResponse.json({ registration }, { status: 201 });
+    response.cookies.set('oak-session', sessionToken!, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: 'lax',
+      path: '/',
+      maxAge: 60 * 60 * 24 * 30,
+    });
+    return response;
+  } catch (e) {
+    return fail(e, e instanceof RateLimitError ? 429 : 400);
+  }
+}
+</file>
+
+<file path="src/app/partners/[id]/page.tsx">
+import { requirePage, partnersRoles } from '@/lib/access';
+import { notFound } from 'next/navigation';
+import { PartnerDetail } from '@/components/partners';
+import { content } from '@/lib/repository';
+export async function generateMetadata({ params }: { params: Promise<{ id: string }> }) {
+  await requirePage(partnersRoles);
+  const { id } = await params;
+  const partner = (await content()).partners.find((p) => p.id === id);
+  return { title: partner?.name ?? 'Partner not found' };
+}
+export default async function Page({ params }: { params: Promise<{ id: string }> }) {
+  await requirePage(partnersRoles);
+  const { id } = await params;
+  const partner = (await content()).partners.find((p) => p.id === id);
+  if (!partner) notFound();
+  return <PartnerDetail partner={partner} />;
+}
+</file>
+
+<file path="src/app/partners/page.tsx">
+import { requirePage, partnersRoles } from '@/lib/access';
+import { PartnerDirectory } from '@/components/partners';
+import { content } from '@/lib/repository';
+export const metadata = { title: 'Partner Directory' };
+export default async function Page() {
+  await requirePage(partnersRoles);
+  return <PartnerDirectory partners={(await content()).partners} />;
+}
+</file>
+
+<file path="src/app/qr-code/page.tsx">
+import { requirePage } from '@/lib/access';
+import { myRegistration } from '@/lib/repository';
+import { RegistrationPage } from '@/components/registration';
+
+export const metadata = { title: 'My QR Code' };
+
+export default async function Page() {
+  await requirePage(['Partner']);
+  const entry = await myRegistration();
+  if (!entry) return <RegistrationPage initial={null} />;
+  // Never send the session token to the browser.
+  const { sessionToken, ...safe } = entry;
+  return <RegistrationPage initial={safe} />;
+}
+</file>
+
+<file path="src/components/attendance.tsx">
+'use client';
+import { useEffect, useState } from 'react';
+import Link from 'next/link';
+import { Search } from 'lucide-react';
+import { Card, Status, requestJson } from './ui';
+import { Dropdown } from './dropdown';
+import { Icon, icons } from './icon';
+import { registrationRoles } from '@/lib/roles';
+import { event } from '@/lib/data';
+
+type Person = {
+  id: string;
+  firstName: string;
+  lastName: string;
+  organisation: string;
+  role: string;
+  createdAt: string;
+  checkedInAt: string | null;
+};
+
+export function Attendance({ initial }: { initial: Person[] }) {
+  const [people, setPeople] = useState(initial),
+    [query, setQuery] = useState(''),
+    [role, setRole] = useState(''),
+    [status, setStatus] = useState(''),
+    [error, setError] = useState('');
+
+  async function refresh() {
+    try {
+      setPeople((await requestJson('/api/attendance')).registrations);
+      setError('');
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  }
+
+  useEffect(() => {
+    const timer = setInterval(() => {
+      if (!document.hidden) void refresh();
+    }, 15000);
+    return () => clearInterval(timer);
+  }, []);
+
+  const checked = people.filter((p) => p.checkedInAt).length;
+  const expected = Math.max(event.expected, people.length);
+  const rate = people.length ? Math.round((checked / people.length) * 100) : 0;
+  const filtered = people.filter(
+    (p) =>
+      `${p.firstName} ${p.lastName} ${p.organisation}`.toLowerCase().includes(query.toLowerCase()) &&
+      (!role || p.role === role) &&
+      (!status || (status === 'attended' ? !!p.checkedInAt : !p.checkedInAt)),
+  );
+  const format = (value: string) =>
+    new Date(value).toLocaleString('en-GB', {
+      timeZone: 'Africa/Harare',
+      dateStyle: 'medium',
+      timeStyle: 'short',
+    });
+
+  return (
+    <>
+      <div className="page-heading">
+        <h1>Attendance</h1>
+        <p>Check-in tracking · {event.dates}</p>
+      </div>
+
+      <div className="stack">
+        {/* Empty state — shown until the first attendee is scanned in */}
+        {checked === 0 && (
+          <Card className="empty-state">
+            <div className="empty-icon">
+              <img src="/icons/icon-43.svg" width={36} height={36} alt="" />
+            </div>
+            <div>
+              <h2>No check-ins yet</h2>
+              <p style={{ paddingTop: 4 }}>
+                Attendees will appear here once they have been scanned in at the event entrance.
+              </p>
+            </div>
+            <Link className="button" href="/check-in">
+              <Icon name={icons.goToScanner} size={16} />
+              Go to Check-In Scanner
+            </Link>
+          </Card>
+        )}
+
+        <Card>
+          <p className="eyebrow">Event Overview</p>
+          <div className="overview-grid">
+            <div>
+              <strong>{expected}</strong>
+              <span>Expected</span>
+            </div>
+            <div>
+              <strong>{checked}</strong>
+              <span>Checked In</span>
+            </div>
+            <div>
+              <strong>{Math.max(expected - checked, 0)}</strong>
+              <span>Pending</span>
+            </div>
+          </div>
+        </Card>
+
+        <Card>
+          <p className="eyebrow">Role breakdown</p>
+          <dl className="details">
+            <div>
+              <dt>Total registered</dt>
+              <dd>{people.length}</dd>
+            </div>
+            <div>
+              <dt>Total attendees</dt>
+              <dd>{checked}</dd>
+            </div>
+            <div>
+              <dt>Attendance rate</dt>
+              <dd>{rate}%</dd>
+            </div>
+            {registrationRoles.map((r) => (
+              <div key={r}>
+                <dt>{r}</dt>
+                <dd>{people.filter((p) => p.role === r).length}</dd>
+              </div>
+            ))}
+          </dl>
+        </Card>
+
+        <Card>
+          <div className="row between">
+            <h2>Participants</h2>
+            <button className="text-button" onClick={refresh}>
+              Refresh
+            </button>
+          </div>
+          <div className="form-stack" style={{ paddingTop: 16 }}>
+            <div className="search-input">
+              <Search size={16} />
+              <input
+                aria-label="Search participants"
+                type="search"
+                placeholder="Search name or organisation…"
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+              />
+            </div>
+            <div className="field">
+              <span>Role</span>
+              <Dropdown
+                name="role"
+                label="Filter by role"
+                onValueChange={setRole}
+                options={[
+                  { value: '', label: 'All roles' },
+                  ...registrationRoles.map((r) => ({ value: r, label: r })),
+                ]}
+              />
+            </div>
+            <div className="field">
+              <span>Attendance status</span>
+              <Dropdown
+                name="status"
+                label="Attendance status"
+                onValueChange={setStatus}
+                options={[
+                  { value: '', label: 'All participants' },
+                  { value: 'attended', label: 'Attended' },
+                  { value: 'pending', label: 'Not checked in' },
+                ]}
+              />
+            </div>
+          </div>
+
+          <div className="attendance-list" style={{ marginTop: 8 }}>
+            {filtered.map((p) => (
+              <div className="person" key={p.id}>
+                <div className="row between">
+                  <strong>
+                    {p.firstName} {p.lastName}
+                  </strong>
+                  <span className={`pill ${p.checkedInAt ? 'attended' : ''}`}>
+                    {p.checkedInAt ? 'Attended' : 'Registered'}
+                  </span>
+                </div>
+                <p>
+                  {p.organisation} · {p.role}
+                </p>
+                <small>
+                  Registered: {format(p.createdAt)}
+                  <br />
+                  Check-in: {p.checkedInAt ? format(p.checkedInAt) : 'Not checked in'}
+                </small>
+              </div>
+            ))}
+            {!filtered.length && (
+              <p className="muted" style={{ padding: '20px 0' }}>
+                No participants match these filters.
+              </p>
+            )}
+          </div>
+
+          <Link className="button full mt-4" href="/check-in">
+            Open Check-in Scanner
+          </Link>
+        </Card>
+
+        <Status error>{error}</Status>
+      </div>
+    </>
+  );
+}
+</file>
+
+<file path="src/components/check-in.tsx">
+'use client';
+
+import { useEffect, useRef, useState, useCallback } from 'react';
+import {
+  ScanLine,
+  CheckCircle2,
+  XCircle,
+  Clock,
+  MapPin,
+  Users,
+  RefreshCw,
+  Search,
+  Camera,
+  CameraOff,
+  Radio,
+} from 'lucide-react';
+
+import type { Registration, Session } from '@/lib/types';
+import { event, initials, nextSession } from '@/lib/data';
+import { Card, Status, requestJson } from './ui';
+
+/** "09:34 · 9 November 2026" in Harare time, from a real ISO check-in timestamp. */
+function stamp(iso: string | null) {
+  const d = iso ? new Date(iso) : new Date();
+  const time = d.toLocaleTimeString('en-GB', {
+    timeZone: 'Africa/Harare',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  });
+  const date = d.toLocaleDateString('en-GB', {
+    timeZone: 'Africa/Harare',
+    day: 'numeric',
+    month: 'long',
+    year: 'numeric',
+  });
+  return `${time} · ${date}`;
+}
+
+export function CheckIn({ demo, sessions }: { demo: boolean; sessions: Session[] }) {
+  const [code, setCode] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const [result, setResult] = useState<{ registration: Registration; already: boolean } | null>(
+    null,
+  );
+  const [failed, setFailed] = useState(false);
+  const [camera, setCamera] = useState(false);
+  const [failMessage, setFailMessage] = useState('Code is invalid or unregistered');
+  const [people, setPeople] = useState<Registration[]>([]);
+  const [query, setQuery] = useState('');
+  // Real count from /api/attendance — stays null until we have it (no made-up numbers).
+  const [count, setCount] = useState<number | null>(null);
+
+  const video = useRef<HTMLVideoElement>(null);
+  const controls = useRef<{ stop: () => void } | null>(null);
+  const scanning = useRef(false);
+  const generation = useRef(0);
+
+  const stop = useCallback(() => {
+    generation.current++;
+    controls.current?.stop();
+    controls.current = null;
+    const stream = video.current?.srcObject as MediaStream | null;
+    stream?.getTracks().forEach((track) => track.stop());
+    if (video.current) video.current.srcObject = null;
+    setCamera(false);
+  }, []);
+
+  useEffect(
+    () => () => {
+      generation.current++;
+      controls.current?.stop();
+      controls.current = null;
+      const stream = video.current?.srcObject as MediaStream | null;
+      stream?.getTracks().forEach((track) => track.stop());
+    },
+    [],
+  );
+
+  async function loadPeople() {
+    try {
+      const data = await requestJson('/api/attendance');
+      setPeople(data.registrations.filter((r: Registration) => r.role === 'Partner'));
+      return data.registrations as Registration[];
+    } catch {
+      return null;
+    }
+  }
+
+  useEffect(() => {
+    void loadPeople();
+  }, []);
+
+  async function scan(value: string, mode: 'code' | 'id' | 'sample' = 'code') {
+    if (scanning.current) return;
+    scanning.current = true;
+    setBusy(true);
+    setError('');
+    stop();
+
+    try {
+      const response = await fetch(mode === 'sample' ? '/api/demo-check-in' : '/api/check-in', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(mode === 'code' ? { code: value } : { id: value }),
+      });
+      const data = await response.json();
+
+      if (data.unrecognised) {
+        setFailMessage('Code is invalid or unregistered');
+        setFailed(true);
+        return;
+      }
+      if (!response.ok) throw new Error(data.error || 'Unable to check in.');
+
+      setResult(data);
+
+      const everyone = await loadPeople();
+      // attendance endpoint unavailable — hide the summary rather than guess
+      setCount(everyone ? everyone.filter((r) => r.checkedInAt).length : null);
+    } catch (e) {
+      if (e instanceof TypeError) {
+        setFailMessage('Network error. Check the connection and try again.');
+        setFailed(true);
+      } else setError((e as Error).message);
+    } finally {
+      scanning.current = false;
+      setBusy(false);
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+  }
+
+  async function startCamera() {
+    setError('');
+    setCamera(true);
+    const current = ++generation.current;
+    try {
+      if (!navigator.mediaDevices?.getUserMedia) {
+        throw new Error(
+          'Camera access needs HTTPS or localhost. You can use manual code entry below.',
+        );
+      }
+      const { BrowserQRCodeReader } = await import('@zxing/browser');
+      if (current !== generation.current) return;
+      const reader = new BrowserQRCodeReader();
+      const c = await reader.decodeFromVideoDevice(undefined, video.current!, (decoded) => {
+        if (decoded && !scanning.current) void scan(decoded.getText());
+      });
+      if (current !== generation.current) c.stop();
+      else controls.current = c;
+    } catch {
+      if (current === generation.current) {
+        setCamera(false);
+        setError(
+          'Camera is unavailable or permission was denied. Check camera permissions, or enter the pass code below.',
+        );
+      }
+    }
+  }
+
+  function reset() {
+    setResult(null);
+    setFailed(false);
+    setCode('');
+    setQuery('');
+    setError('');
+  }
+
+  function retryScan() {
+    reset();
+    void startCamera();
+  }
+
+  function manualSearch() {
+    reset();
+    setTimeout(() => {
+      const box = document.getElementById('manual-search');
+      box?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      box?.focus();
+    }, 50);
+  }
+
+  /* ------------------------------------------------------------
+   * CHECK-IN FAILED  ("QR Code Not Recognized")
+   * ------------------------------------------------------------ */
+  if (failed) {
+    return (
+      <div className="stack">
+        <section className="hero failure hero-with-icon">
+          <span className="hero-icon">
+            <XCircle size={28} />
+          </span>
+          <div>
+            <p className="eyebrow">Check-In Failed</p>
+            <h1 style={{ paddingTop: 6 }}>QR Code Not Recognized</h1>
+            <p style={{ paddingTop: 4 }}>{failMessage}</p>
+          </div>
+        </section>
+
+        <Card>
+          <h2 className="eyebrow" style={{ marginBottom: 0 }}>
+            Possible reasons
+          </h2>
+          <ul className="reasons">
+            {[
+              'Invalid QR code',
+              'Duplicate QR code',
+              'Network error',
+              'Corrupted QR code',
+              'Participant not found',
+            ].map((reason) => (
+              <li key={reason}>
+                <img src="/icons/container-margin-2.svg" width={16} height={18} alt="" />
+                {reason}
+              </li>
+            ))}
+          </ul>
+        </Card>
+
+        <button className="button full" onClick={retryScan}>
+          <RefreshCw size={17} />
+          Retry Scan
+        </button>
+        <button className="button secondary full" onClick={manualSearch}>
+          <Search size={15} />
+          Manual Search
+        </button>
+        <button className="button secondary full" onClick={reset}>
+          <ScanLine size={17} />
+          Return to Scanner
+        </button>
+      </div>
+    );
+  }
+
+  /* ------------------------------------------------------------
+   * CHECKED IN SUCCESSFULLY
+   * ------------------------------------------------------------ */
+  if (result) {
+    const r = result.registration;
+    const next = nextSession(sessions);
+
+    return (
+      <div className="stack">
+        <section className="hero success hero-with-icon">
+          <span className="hero-icon">
+            <CheckCircle2 size={28} />
+          </span>
+          <div>
+            <p className="eyebrow">{result.already ? 'Already checked in' : 'Check-in complete'}</p>
+            <h1 style={{ paddingTop: 6 }}>
+              {result.already ? 'Already Checked In' : 'Participant Successfully Checked In'}
+            </h1>
+            <p className="row" style={{ gap: 6, paddingTop: 6 }}>
+              <Clock size={12} />
+              {stamp(r.checkedInAt)}
+            </p>
+          </div>
+        </section>
+
+        <Card>
+          <div className="row">
+            <span className="avatar large">{initials(`${r.firstName} ${r.lastName}`)}</span>
+            <div>
+              <h2 style={{ fontSize: 18 }}>
+                {r.firstName} {r.lastName}
+              </h2>
+              <p className="muted" style={{ fontSize: 13, paddingBottom: 6 }}>
+                {r.organisation}
+              </p>
+              <span className="badge">{r.role}</span>
+            </div>
+          </div>
+
+          <dl className="details" style={{ marginTop: 16 }}>
+            <div>
+              <dt>Full Name</dt>
+              <dd>
+                {r.firstName} {r.lastName}
+              </dd>
+            </div>
+            <div>
+              <dt>Organisation</dt>
+              <dd>{r.organisation}</dd>
+            </div>
+            <div>
+              <dt>Role</dt>
+              <dd>{r.role}</dd>
+            </div>
+            <div>
+              <dt>Registration Status</dt>
+              <dd>Registered</dd>
+            </div>
+            <div>
+              <dt>Check-In Time</dt>
+              <dd>{stamp(r.checkedInAt)}</dd>
+            </div>
+          </dl>
+
+          {next && (
+            <div className="next-session">
+              <div>
+                <span className="eyebrow">
+                  <Users size={11} />
+                  Next Session
+                </span>
+                <strong>{next.title.replace(/^[^:]*:\s*/, '')}</strong>
+              </div>
+              <div>
+                <span className="eyebrow">
+                  <MapPin size={11} />
+                  Venue
+                </span>
+                <strong>{next.venue}</strong>
+              </div>
+            </div>
+          )}
+        </Card>
+
+        <Card>
+          <h2 className="eyebrow" style={{ marginBottom: 0 }}>
+            <Radio size={12} />
+            Live Event Status
+          </h2>
+          {next && (
+            <div className="live-status">
+              <span className="live-dot" />
+              <strong>
+                {next.title.replace(/^[^:]*:\s*/, '')} starting at {next.time}
+              </strong>
+            </div>
+          )}
+          {count !== null && (
+            <>
+              <p className="muted attendance-summary">
+                {count} of {event.expected} attendees checked in
+                {next ? ` · ${next.venue}` : ''}
+              </p>
+              <div className="attendance-progress">
+                <div
+                  className="attendance-progress-fill"
+                  style={{ width: `${Math.min((count / event.expected) * 100, 100)}%` }}
+                />
+              </div>
+            </>
+          )}
+        </Card>
+
+        <Status error>{error}</Status>
+
+        <button className="button full" onClick={reset}>
+          <ScanLine size={18} />
+          Scan Next Attendee
+        </button>
+      </div>
+    );
+  }
+
+  /* ------------------------------------------------------------
+   * SCANNER  (Figma: "Event Check-In")
+   * ------------------------------------------------------------ */
+  return (
+    <>
+      <div className="page-heading">
+        <h1>Event Check-In</h1>
+        <p>Scan an attendee QR code to check them in</p>
+      </div>
+
+      <div className="stack">
+        <section className="scanner">
+          <div className="camera-view">
+            <video
+              ref={video}
+              autoPlay
+              playsInline
+              muted
+              aria-label="QR scanner camera"
+              className={camera ? '' : 'hidden'}
+            />
+            <div className="scan-frame">
+              <i />
+              <i />
+              <i />
+              <i />
+            </div>
+            <p>Position QR code within the frame</p>
+          </div>
+          <div className="scanner-footer">
+            <ScanLine size={20} />
+            <span>
+              {camera
+                ? 'Hold camera steady · Auto-scans in 1–2 seconds'
+                : 'Start the camera to scan an entry pass'}
+            </span>
+          </div>
+        </section>
+
+        <button
+          className="button secondary full"
+          disabled={busy}
+          onClick={camera ? stop : startCamera}
+        >
+          {camera ? <CameraOff size={18} /> : <Camera size={18} />}
+          {camera ? 'Stop Camera' : 'Start Camera'}
+        </button>
+
+        <Status error>{error}</Status>
+
+        {demo && (
+          <Card>
+            <h2 className="eyebrow" style={{ marginBottom: 0 }}>
+              Simulate QR Scan
+            </h2>
+            {[
+              {
+                id: 'collin',
+                name: 'Collin Manyande',
+                role: 'Partner',
+                code: 'OAK-2026-7842-XKPH',
+              },
+              { id: 'kayden', name: 'Kayden Mamu', role: 'Partner', code: 'OAK-2026-5592-FWBN' },
+            ].map((p) => (
+              <button
+                disabled={busy}
+                className="sample-person"
+                key={p.id}
+                onClick={() => scan(p.id, 'sample')}
+              >
+                <span className="avatar small">{initials(p.name)}</span>
+                <span>
+                  <strong>{p.name}</strong>
+                  <small>{p.code}</small>
+                </span>
+                <span className="badge">{p.role}</span>
+              </button>
+            ))}
+          </Card>
+        )}
+
+        <Card>
+          <h2 className="eyebrow" style={{ marginBottom: 12 }}>
+            Manual Search
+          </h2>
+          <div className="search-input">
+            <Search size={16} />
+            <input
+              id="manual-search"
+              aria-label="Search partners by name or organisation"
+              type="search"
+              placeholder="Search partner name or organisation…"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              autoComplete="off"
+            />
+          </div>
+          {query.trim() && (
+            <div className="attendance-list" style={{ marginTop: 8 }}>
+              {people
+                .filter((p) =>
+                  `${p.firstName} ${p.lastName} ${p.organisation}`
+                    .toLowerCase()
+                    .includes(query.trim().toLowerCase()),
+                )
+                .slice(0, 8)
+                .map((p) => (
+                  <div className="person" key={p.id}>
+                    <div className="row between">
+                      <strong>
+                        {p.firstName} {p.lastName}
+                      </strong>
+                      <span className={`pill ${p.checkedInAt ? 'attended' : ''}`}>
+                        {p.checkedInAt ? 'Attended' : 'Registered'}
+                      </span>
+                    </div>
+                    <p>
+                      {p.organisation} · {p.role}
+                    </p>
+                    <button
+                      className="button full"
+                      style={{ marginTop: 8 }}
+                      disabled={busy}
+                      onClick={() => scan(p.id, 'id')}
+                    >
+                      {p.checkedInAt ? 'View Check-In' : 'Check In'}
+                    </button>
+                  </div>
+                ))}
+              {!people.some((p) =>
+                `${p.firstName} ${p.lastName} ${p.organisation}`
+                  .toLowerCase()
+                  .includes(query.trim().toLowerCase()),
+              ) && (
+                <p className="muted" style={{ padding: '12px 0' }}>
+                  Participant not found.
+                </p>
+              )}
+            </div>
+          )}
+        </Card>
+
+        <Card>
+          <h2 className="eyebrow" style={{ marginBottom: 12 }}>
+            Manual Code Entry
+          </h2>
+          <form
+            className="row manual-entry"
+            onSubmit={(e) => {
+              e.preventDefault();
+              void scan(code);
+            }}
+          >
+            <label className="sr-only" htmlFor="entry-code">
+              Entry pass code
+            </label>
+            <input
+              id="entry-code"
+              value={code}
+              onChange={(e) => setCode(e.target.value)}
+              placeholder="OAK-2026-XXXX-XXXX"
+              required
+              maxLength={90}
+              autoComplete="off"
+            />
+            <button className="button" disabled={busy}>
+              {busy ? 'Checking…' : 'Check'}
+            </button>
+          </form>
+        </Card>
+      </div>
+    </>
+  );
+}
+</file>
+
+<file path="src/components/registration.tsx">
+'use client';
+import { useEffect, useState } from 'react';
+import Link from 'next/link';
+import QRCode from 'qrcode';
+import { CheckCircle2, Download, RotateCcw } from 'lucide-react';
+import { Card, Status, requestJson } from './ui';
+import type { Registration } from '@/lib/types';
+import { event } from '@/lib/data';
+import { registrationRoles } from '@/lib/roles';
+import { Dropdown } from './dropdown';
+
+// Stat icons exported from Figma (public/icons): users, calendar, layers
+const stats = [
+  { icon: '/icons/icon.svg', value: '110+', label: 'Attendees' },
+  { icon: '/icons/icon-2.svg', value: '24', label: 'Sessions' },
+  { icon: '/icons/icon-3.svg', value: '38', label: 'Partners' },
+];
+
+export function RegistrationPage({ initial }: { initial: Registration | null }) {
+  const [entry, setEntry] = useState(initial);
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [qr, setQr] = useState('');
+  const [role, setRole] = useState('');
+
+  useEffect(() => {
+    let active = true;
+    if (entry?.role === 'Partner')
+      QRCode.toDataURL(entry.code, {
+        width: 420,
+        margin: 4,
+        color: { dark: '#162e55', light: '#ffffff' },
+        errorCorrectionLevel: 'M',
+      })
+        .then((url) => {
+          if (active) setQr(url);
+        })
+        .catch(() =>
+          setError('Unable to create the QR image. Your entry code below remains valid.'),
+        );
+    return () => {
+      active = false;
+    };
+  }, [entry]);
+
+  async function submit(e: React.FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    setError('');
+    setBusy(true);
+    const form = new FormData(e.currentTarget);
+    try {
+      const data = await requestJson('/api/register', {
+        ...Object.fromEntries(form),
+        consent: form.get('consent') === 'on',
+      });
+      window.location.assign(
+        data.registration.role === 'Partner'
+          ? '/qr-code'
+          : data.registration.role === 'Coordination Team'
+            ? '/check-in'
+            : '/programme',
+      );
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  /* ------------------------------------------------------------------
+   * REGISTRATION COMPLETE  (Figma: "Registration Complete" / entry pass)
+   * ------------------------------------------------------------------ */
+  if (entry)
+    return (
+      <div className="stack">
+        <section className="hero hero-with-icon">
+          <span className="hero-icon">
+            <CheckCircle2 size={28} />
+          </span>
+          <div>
+            <p className="eyebrow" style={{ paddingTop: 0 }}>
+              Registration Complete
+            </p>
+            <h1>
+              You’re Registered,
+              <br />
+              {entry.firstName}!
+            </h1>
+            <p>{entry.organisation}</p>
+          </div>
+        </section>
+
+        <p className="muted" style={{ fontSize: 13 }}>
+          {entry.emailStatus === 'sent'
+            ? 'A confirmation email with your QR code has been sent.'
+            : 'Your registration is saved. Download your QR code below; confirmation email is currently unavailable.'}
+        </p>
+
+        <Card className="entry-pass">
+          <p className="eyebrow">Your Entry Pass</p>
+          <div className="qr-frame">
+            {qr ? (
+              <img src={qr} width={230} height={230} alt="Your event entry QR code" />
+            ) : (
+              <p style={{ width: 230, height: 230, display: 'grid', placeItems: 'center' }}>
+                Preparing QR code…
+              </p>
+            )}
+          </div>
+          <p className="entry-code">{entry.code}</p>
+          <p>Present at event entrance for check-in</p>
+        </Card>
+
+        <Card>
+          <h2 className="eyebrow" style={{ marginBottom: 4 }}>
+            Registration Details
+          </h2>
+          <dl className="details">
+            {[
+              ['Name', `${entry.firstName} ${entry.lastName}`],
+              ['Organisation', entry.organisation],
+              ['Registration ID', entry.code || '—'],
+              ['Role', entry.role],
+              ['Email', entry.email],
+              ['Event', `OAK Foundation ${event.name}`],
+              ['Event Dates', event.dates],
+              ['Location', `${event.location}, Zimbabwe`],
+            ].map(([label, value]) => (
+              <div key={label}>
+                <dt>{label}</dt>
+                <dd>{value}</dd>
+              </div>
+            ))}
+          </dl>
+        </Card>
+
+        <Status error>{error}</Status>
+
+        <a
+          className="button full"
+          download={`OAK-entry-pass-${entry.firstName}.png`}
+          href={qr || undefined}
+          aria-disabled={!qr}
+        >
+          <Download size={18} />
+          Download QR Code
+        </a>
+        <button
+          className="text-button"
+          onClick={() => {
+            setEntry(null);
+            setQr('');
+          }}
+        >
+          <RotateCcw size={16} />
+          Register another attendee
+        </button>
+      </div>
+    );
+
+  /* ------------------------------------------------------------------
+   * REGISTRATION FORM
+   * ------------------------------------------------------------------ */
+  return (
+    <div className="stack">
+      <section className="hero">
+        <h1>
+          Partner
+          <br />
+          Convening 2026
+        </h1>
+        <p>
+          {event.location} · {event.dates}
+        </p>
+      </section>
+
+      <div className="stats-grid">
+        {stats.map((s) => (
+          <Card key={s.label} className="stat-card">
+            <img src={s.icon} width={16} height={16} alt="" />
+            <strong>{s.value}</strong>
+            <span>{s.label}</span>
+          </Card>
+        ))}
+      </div>
+
+      <Card>
+        <h2>Registration Form</h2>
+        <form onSubmit={submit} className="form-stack">
+          <div className="form-row">
+            <Field
+              label="First Name"
+              name="firstName"
+              placeholder="Maria"
+              required
+              autoComplete="given-name"
+            />
+            <Field
+              label="Last Name"
+              name="lastName"
+              placeholder="Schmidt"
+              required
+              autoComplete="family-name"
+            />
+          </div>
+          <Field
+            label="Organisation"
+            name="organisation"
+            placeholder="Your organisation name"
+            required
+            autoComplete="organization"
+          />
+          <Field label="Sub-Partner / Programme Area" name="programmeArea" placeholder="Optional" />
+          <div className="field">
+            <span>
+              Role / Capacity <em>*</em>
+            </span>
+            <Dropdown
+              name="role"
+              label="Role / Capacity"
+              required
+              onValueChange={setRole}
+              options={[
+                { value: '', label: 'Select your role', disabled: true },
+                ...registrationRoles.map((role) => ({ value: role, label: role })),
+              ]}
+            />
+          </div>
+          {role === 'Coordination Team' && (
+            <Field
+              label="Staff access code"
+              name="staffAccessCode"
+              type="password"
+              autoComplete="off"
+              placeholder="Provided by the event organisers"
+              maxLength={200}
+            />
+          )}
+          <Field
+            label="Email Address"
+            name="email"
+            placeholder="you@organisation.org"
+            type="email"
+            required
+            autoComplete="email"
+          />
+          <Field
+            label="Phone Number"
+            name="phone"
+            placeholder="+263 xx xxx xxxx"
+            type="tel"
+            autoComplete="tel"
+            required
+          />
+
+          <fieldset className="requirements">
+            <legend className="sr-only">Requirements</legend>
+            <p className="eyebrow">Requirements</p>
+            <Field
+              label="Dietary Requirements"
+              name="dietary"
+              placeholder="e.g. Vegetarian, Halal, Gluten-free"
+              maxLength={500}
+            />
+            <Field
+              label="Accessibility Requirements"
+              name="accessibility"
+              placeholder="e.g. Wheelchair access, hearing loop"
+              maxLength={500}
+            />
+            <Field
+              label="Travel Requirements"
+              name="travel"
+              placeholder="e.g. Flight from London, airport pickup"
+              maxLength={500}
+            />
+            <Field
+              label="Accommodation Requirements"
+              name="accommodation"
+              placeholder="e.g. Hotel needed, ground-floor room"
+              maxLength={500}
+            />
+          </fieldset>
+
+          <label className="consent">
+            <input name="consent" type="checkbox" required />
+            <span>
+              I agree to OAK Foundation’s{' '}
+              <Link href="/privacy" target="_blank">
+                privacy policy
+              </Link>{' '}
+              and consent to my registration data being used for event coordination.
+            </span>
+          </label>
+
+          <div className="honeypot" aria-hidden="true">
+            <label>
+              Website
+              <input name="website" tabIndex={-1} autoComplete="off" />
+            </label>
+          </div>
+
+          <Status error>{error}</Status>
+          <button className="button full" disabled={busy}>
+            {busy ? 'Registering…' : 'Register & Generate QR Code'}
+          </button>
+        </form>
+      </Card>
+
+      <p className="privacy-footer">
+        Your data is secured and handled by OAK Foundation in accordance with GDPR.
+      </p>
+    </div>
+  );
+}
+
+function Field({
+  label,
+  name,
+  required = false,
+  ...props
+}: {
+  label: string;
+  name: string;
+  required?: boolean;
+} & React.InputHTMLAttributes<HTMLInputElement>) {
+  return (
+    <label className="field">
+      <span>
+        {label} {required && <em>*</em>}
+      </span>
+      <input name={name} required={required} maxLength={160} {...props} />
+    </label>
+  );
+}
+</file>
+
+<file path="src/components/shell.tsx">
+'use client';
+
+import Link from 'next/link';
+import { usePathname } from 'next/navigation';
+import { LogOut, ShieldCheck } from 'lucide-react';
+import type { ReactNode } from 'react';
+import { Icon, icons } from './icon';
+import { event } from '@/lib/data';
+
+type NavItem = { href: string; label: string; icon: string };
+
+export function Shell({
+  children,
+  demo,
+  role,
+}: {
+  children: ReactNode;
+  demo: boolean;
+  role: string | null;
+}) {
+  const path = usePathname();
+
+  const staff = role === 'Coordination Team';
+
+  // Same role-based access matrix as before — only the look changed.
+  const nav: NavItem[] = [
+    { href: '/', label: 'Register', icon: icons.register },
+    ...(staff ? [{ href: '/check-in', label: 'Check In', icon: icons.checkIn }] : []),
+    ...(role === 'Partner' ? [{ href: '/qr-code', label: 'My QR Code', icon: icons.checkIn }] : []),
+    ...(role && role !== 'Partner'
+      ? [{ href: '/programme', label: 'Programme', icon: icons.programme }]
+      : []),
+    ...(role ? [{ href: '/partners', label: 'Partners', icon: icons.partners }] : []),
+    ...(staff ? [{ href: '/attendance', label: 'Attendance', icon: icons.attendance }] : []),
+  ];
+
+  const isActive = (href: string) => (href === '/' ? path === '/' : path.startsWith(href));
+
+  return (
+    <>
+      <a className="skip-link" href="#main">
+        Skip to content
+      </a>
+
+      {/* MOBILE HEADER (navy bar: logo · divider · event name) */}
+      <header className="mobile-header">
+        <Link href="/" aria-label="OAK Foundation home" className="row" style={{ gap: 12 }}>
+          <img src="/Logo-Oak-Foundation.svg" width={45} height={28} alt="OAK Foundation" />
+          <span className="divider" aria-hidden="true" />
+          <span className="brand-title">{event.name}</span>
+        </Link>
+      </header>
+
+      {/* DESKTOP SIDEBAR */}
+      <aside className="sidebar">
+        <Link href="/" className="sidebar-brand" aria-label="OAK Foundation home">
+          <img src="/Logo-Oak-Foundation.svg" width={85} height={53} alt="OAK Foundation" />
+          <span className="brand-title">{event.name}</span>
+        </Link>
+
+        <nav aria-label="Main navigation">
+          <p className="eyebrow nav-role">{role ?? 'Register to access the event'}</p>
+          {nav.map(({ href, label, icon }) => (
+            <Link
+              key={href}
+              href={href}
+              aria-current={isActive(href) ? 'page' : undefined}
+              className={`nav-link ${isActive(href) ? 'active' : ''}`}
+            >
+              <Icon name={icon} size={18} />
+              <span>{label}</span>
+            </Link>
+          ))}
+        </nav>
+
+        <div className="sidebar-footer">
+          <img src="/icons/container-30.svg" width={32} height={32} alt="" />
+          <div>
+            <strong>{event.location}, Zimbabwe</strong>
+            <small>{event.dates}</small>
+          </div>
+        </div>
+      </aside>
+
+      {/* MAIN CONTENT */}
+      <div className="main-shell">
+        <main id="main">
+          {children}
+
+          <footer className="utility-footer">
+            {demo && <span className="demo-label">Local demo · sample event content</span>}
+
+            <Link href={staff ? '/attendance' : '/staff'}>
+              <ShieldCheck size={13} />
+              {staff ? 'Staff area' : 'Staff sign-in'}
+            </Link>
+
+            {staff && !demo && (
+              <button
+                onClick={async () => {
+                  await fetch('/api/auth/sign-out', { method: 'POST' });
+                  window.location.href = '/';
+                }}
+              >
+                <LogOut size={13} />
+                Sign out
+              </button>
+            )}
+          </footer>
+        </main>
+      </div>
+
+      {/* MOBILE BOTTOM NAV (frosted bar, 9px labels) */}
+      <nav className="bottom-nav" aria-label="Mobile navigation">
+        {nav.map(({ href, label, icon }) => (
+          <Link
+            key={href}
+            href={href}
+            aria-current={isActive(href) ? 'page' : undefined}
+            className={isActive(href) ? 'active' : ''}
+          >
+            <Icon name={icon} size={19} />
+            <span>{label}</span>
+          </Link>
+        ))}
+      </nav>
+    </>
+  );
+}
+</file>
+
+<file path="src/lib/access.ts">
+import 'server-only';
+import { redirect } from 'next/navigation';
+import { myRegistration, staffUser } from './repository';
+export async function currentRole() {
+  if (await staffUser()) return 'Coordination Team';
+  return (await myRegistration())?.role ?? null;
+}
+export async function requirePage(roles: string[]) {
+  const role = await currentRole();
+  if (!role) redirect('/');
+  if (!roles.includes(role)) redirect(role === 'Partner' ? '/qr-code' : '/programme');
+}
+export const programmeRoles = ['OAK Staff', 'Coordination Team', 'Presenter', 'Observer'];
+// Requirements section 8: the Partners page is open to all five roles.
+export const partnersRoles = ['Partner', ...programmeRoles];
+</file>
+
+<file path="src/lib/api.ts">
+import { NextRequest, NextResponse } from 'next/server';
+import { isConfigured } from './supabase/config';
+import { staffUser } from './repository';
+import { currentRole } from './access';
+
+type RateWindow = { hits: number[] };
+const runtime = globalThis as typeof globalThis & { oakRateLimits?: Map<string, RateWindow> };
+
+export class RateLimitError extends Error {
+  constructor() {
+    super('Too many attempts. Please wait a few minutes and try again.');
+  }
+}
+
+function clientAddress(request: NextRequest) {
+  return (
+    request.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ||
+    request.headers.get('x-real-ip') ||
+    'unknown'
+  );
+}
+export function fail(error: unknown, status = 400) {
+  return NextResponse.json(
+    { error: error instanceof Error ? error.message : 'Something went wrong. Please try again.' },
+    { status },
+  );
+}
+export function guard(request: NextRequest) {
+  if (!isConfigured() && !['localhost', '127.0.0.1', '[::1]'].includes(request.nextUrl.hostname))
+    throw new Error('Connect Supabase before using this app on a public host.');
+  const origin = request.headers.get('origin');
+  if (origin && new URL(origin).host !== request.headers.get('host'))
+    throw new Error('Request origin is not allowed.');
+}
+
+/** A per-instance sliding-window limit for endpoints that create event records. */
+export function rateLimit(request: NextRequest, bucket: string, limit: number, windowMs: number) {
+  const now = Date.now();
+  const key = `${bucket}:${clientAddress(request)}`;
+  const limits = (runtime.oakRateLimits ??= new Map<string, RateWindow>());
+  const window = limits.get(key) ?? { hits: [] };
+  window.hits = window.hits.filter((hit) => hit > now - windowMs);
+  if (window.hits.length >= limit) {
+    limits.set(key, window);
+    throw new RateLimitError();
+  }
+  window.hits.push(now);
+  limits.set(key, window);
+
+  // Bound the process-local cache in long-running local or server processes.
+  if (limits.size > 500) {
+    for (const [storedKey, storedWindow] of limits) {
+      if (!storedWindow.hits.some((hit) => hit > now - windowMs)) limits.delete(storedKey);
+    }
+  }
+}
+export async function requireStaff() {
+  if ((await currentRole()) !== 'Coordination Team')
+    throw new Error('Coordination Team access is required.');
+}
+</file>
+
+<file path=".gitignore">
+node_modules/
+.next/
+.env*
+!.env.example
+*.tsbuildinfo
+.data/
+.env.local
+</file>
+
 <file path="README.md">
 # OAK Foundation event platform
 
@@ -6896,67 +6974,6 @@ npm run test:smoke
 
 The smoke script runs only against the local demo and creates synthetic test registrations and private notes. Deploy to a Next.js server host with HTTPS and the environment values configured. This is not a static-export app. No external database, sender account, or public deployment is provisioned by these source files.
 # oak_foudation
-</file>
-
-<file path="tsconfig.json">
-{
-  "compilerOptions": {
-    "target": "ES2022",
-    "lib": ["dom", "dom.iterable", "esnext"],
-    "allowJs": true,
-    "skipLibCheck": true,
-    "strict": true,
-    "noEmit": true,
-    "esModuleInterop": true,
-    "module": "esnext",
-    "moduleResolution": "bundler",
-    "resolveJsonModule": true,
-    "isolatedModules": true,
-    "jsx": "react-jsx",
-    "incremental": true,
-    "plugins": [{ "name": "next" }],
-    "paths": { "@/*": ["./src/*"] }
-  },
-  "include": [
-    "next-env.d.ts",
-    "**/*.ts",
-    "**/*.tsx",
-    ".next/types/**/*.ts",
-    ".next/dev/types/**/*.ts"
-  ],
-  "exclude": ["node_modules"]
-}
-</file>
-
-<file path="VERIFICATION.md">
-# Requirements verification
-
-Compared the app with all 12 pages of `OAK Foundation Event Attendance Platform Requirements.pdf` and visually inspected its final access matrix. Used that matrix for the conflicting Partner-directory permission.
-
-Verified on 14 September 2026:
-- Production build and TypeScript checks pass.
-- Seven validation/QR tests pass.
-- Local HTTP smoke workflow passes all five roles and 25 page access checks, coordination-only API access, Partner-only QR generation, original timestamp on duplicate check-in, private note creation/editing, and cross-user note isolation.
-- Browser registration as Coordination Team redirects to Check-in and exposes Check-in, Programme, Partners, and Attendance in desktop/mobile navigation.
-- Attendance role filter correctly narrows the participant list.
-- All four pages load; 400px mobile layout has no horizontal page overflow.
-- Exact role choices and common dropdown styling are retained.
-
-Preview is left as the synthetic Demo Coordinator. Automated requirements test rows/notes were removed; existing user data was retained.
-
-Not verified with external credentials: live Supabase migration/execution and confirmation email delivery. Physical camera scanning was not exercised in this pass. Event resource files, official partner logos and unspecified profile details were not supplied; reference placeholders remain as described in README.md.
-
-New Supabase installations must run migrations 001 and 002, then seed.sql. Existing installations must run migration 002. Email configuration is documented in README.md and .env.example.
-</file>
-
-<file path=".gitignore">
-node_modules/
-.next/
-.env*
-!.env.example
-*.tsbuildinfo
-.data/
-.env.local
 </file>
 
 <file path="src/app/globals.css">
