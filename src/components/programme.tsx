@@ -138,12 +138,6 @@ export function Programme({
                 <Icon name={icons.pin} size={11} />
                 {featured.venue}
               </p>
-              {featured.description && (
-                <details>
-                  <summary>View session details</summary>
-                  <p>{featured.description}</p>
-                </details>
-              )}
             </section>
           )}
           <div className="legend">

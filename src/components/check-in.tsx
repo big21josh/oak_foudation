@@ -13,6 +13,7 @@ import {
   Camera,
   CameraOff,
   Radio,
+  Phone,
 } from 'lucide-react';
 
 import type { Registration, Session } from '@/lib/types';
@@ -182,7 +183,7 @@ export function CheckIn({ demo, sessions }: { demo: boolean; sessions: Session[]
   }
 
   /* ------------------------------------------------------------
-   * CHECK-IN FAILED  ("QR Code Not Recognized")
+   * CHECK-IN FAILED  ("QR Not Recognised")
    * ------------------------------------------------------------ */
   if (failed) {
     return (
@@ -193,22 +194,22 @@ export function CheckIn({ demo, sessions }: { demo: boolean; sessions: Session[]
           </span>
           <div>
             <p className="eyebrow">Check-In Failed</p>
-            <h1 style={{ paddingTop: 6 }}>QR Code Not Recognized</h1>
-            <p style={{ paddingTop: 4 }}>{failMessage}</p>
+            <h1>QR Not Recognised</h1>
+            <p style={{ paddingTop: 0 }}>{failMessage}</p>
           </div>
         </section>
 
         <Card>
-          <h2 className="eyebrow" style={{ marginBottom: 0 }}>
+          <h2 className="card-title">
+            <img src="/icons/icon-19.svg" width={15} height={15} alt="" />
             Possible reasons
           </h2>
           <ul className="reasons">
             {[
-              'Invalid QR code',
-              'Duplicate QR code',
-              'Network error',
-              'Corrupted QR code',
-              'Participant not found',
+              'QR code belongs to a different event',
+              'Registration was not completed',
+              'Code has been altered or corrupted',
+              'Attendee registered under a different email',
             ].map((reason) => (
               <li key={reason}>
                 <img src="/icons/container-margin-2.svg" width={16} height={18} alt="" />
@@ -220,15 +221,11 @@ export function CheckIn({ demo, sessions }: { demo: boolean; sessions: Session[]
 
         <button className="button full" onClick={retryScan}>
           <RefreshCw size={17} />
-          Retry Scan
+          Try Again
         </button>
         <button className="button secondary full" onClick={manualSearch}>
-          <Search size={15} />
-          Manual Search
-        </button>
-        <button className="button secondary full" onClick={reset}>
-          <ScanLine size={17} />
-          Return to Scanner
+          <Phone size={15} />
+          Contact Coordination Team
         </button>
       </div>
     );
@@ -244,16 +241,15 @@ export function CheckIn({ demo, sessions }: { demo: boolean; sessions: Session[]
     return (
       <div className="stack">
         <section className="hero success hero-with-icon">
-          <span className="hero-icon">
+          <div className="hero-icon">
             <CheckCircle2 size={28} />
-          </span>
-          <div>
-            <p className="eyebrow">{result.already ? 'Already checked in' : 'Check-in complete'}</p>
-            <h1 style={{ paddingTop: 6 }}>
-              {result.already ? 'Already Checked In' : 'Participant Successfully Checked In'}
-            </h1>
-            <p className="row" style={{ gap: 6, paddingTop: 6 }}>
-              <Clock size={12} />
+          </div>
+
+          <div className="hero-content">
+            <h1>Checked In Successfully</h1>
+
+            <p className="checkin-time">
+              <Clock size={11} />
               {stamp(r.checkedInAt)}
             </p>
           </div>
@@ -261,42 +257,17 @@ export function CheckIn({ demo, sessions }: { demo: boolean; sessions: Session[]
 
         <Card>
           <div className="row">
-            <span className="avatar large">{initials(`${r.firstName} ${r.lastName}`)}</span>
+            <span className="avatar large solid">{initials(`${r.firstName} ${r.lastName}`)}</span>
             <div>
               <h2 style={{ fontSize: 18 }}>
                 {r.firstName} {r.lastName}
               </h2>
-              <p className="muted" style={{ fontSize: 13, paddingBottom: 6 }}>
+              <p className="muted" style={{ fontSize: 14, paddingTop: 2, paddingBottom: 6 }}>
                 {r.organisation}
               </p>
               <span className="badge">{r.role}</span>
             </div>
           </div>
-
-          <dl className="details" style={{ marginTop: 16 }}>
-            <div>
-              <dt>Full Name</dt>
-              <dd>
-                {r.firstName} {r.lastName}
-              </dd>
-            </div>
-            <div>
-              <dt>Organisation</dt>
-              <dd>{r.organisation}</dd>
-            </div>
-            <div>
-              <dt>Role</dt>
-              <dd>{r.role}</dd>
-            </div>
-            <div>
-              <dt>Registration Status</dt>
-              <dd>Registered</dd>
-            </div>
-            <div>
-              <dt>Check-In Time</dt>
-              <dd>{stamp(r.checkedInAt)}</dd>
-            </div>
-          </dl>
 
           {next && (
             <div className="next-session">
@@ -491,10 +462,10 @@ export function CheckIn({ demo, sessions }: { demo: boolean; sessions: Session[]
                   .toLowerCase()
                   .includes(query.trim().toLowerCase()),
               ) && (
-                <p className="muted" style={{ padding: '12px 0' }}>
-                  Participant not found.
-                </p>
-              )}
+                  <p className="muted" style={{ padding: '12px 0' }}>
+                    Participant not found.
+                  </p>
+                )}
             </div>
           )}
         </Card>

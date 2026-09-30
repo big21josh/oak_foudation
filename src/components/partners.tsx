@@ -154,14 +154,18 @@ export function PartnerDetail({ partner: p }: { partner: Partner }) {
           rel="noreferrer"
           className="button full partner-action"
         >
-          <Globe size={18} />
-          Visit Website
-          <ExternalLink size={16} />
+          <span className="action-label">
+            <Globe size={15} />
+            Visit Website
+          </span>
+          <ExternalLink size={14} />
         </a>
         <button className="button secondary full partner-action" onClick={() => setMessage(true)}>
-          <Mail size={18} />
-          Send Message
-          <ChevronRight size={16} />
+          <span className="action-label">
+            <Mail size={15} />
+            Send Message
+          </span>
+          <ChevronRight size={14} />
         </button>
       </div>
       {message && (
