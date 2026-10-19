@@ -28,13 +28,13 @@ export async function POST(request: NextRequest) {
     const input = {
       ...fields,
       ownerId,
-      name: registration ? `${registration.firstName} ${registration.lastName}` : 'Coordination Team',
+      name: registration
+        ? `${registration.firstName} ${registration.lastName}`
+        : 'Coordination Team',
       organisation: registration?.organisation ?? 'OAK Foundation',
     };
 
-    const note = id
-      ? await updateNote(id, ownerId, input)
-      : await addNote(input, registration ? 'participant' : 'admin');
+    const note = id ? await updateNote(id, ownerId, input) : await addNote(input);
     return NextResponse.json({ note });
   } catch (e) {
     return fail(e);

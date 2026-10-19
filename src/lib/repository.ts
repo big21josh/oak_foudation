@@ -6,11 +6,24 @@ import { cookies } from 'next/headers';
 import { adminClient } from './supabase/admin';
 import { createClient } from './supabase/server';
 import { isConfigured } from './supabase/config';
-import { initialNotes, partners, sessions, initials } from './data';
-import { newToken, tokenHash, validToken, eventDate } from './security';
+import { initialNotes, partners, sessions } from './data';
+import { newToken, sessionHash, validToken, sessionIsActive, SESSION_MAX_AGE } from './security';
 import type { Registration, Note, Partner, Session } from './types';
 
-type LocalData = { registrations: Registration[]; notes: Note[] };
+type StoredRegistration = Omit<Registration, 'sessionToken'> & {
+  sessionToken?: string;
+  sessionTokenHash?: string;
+  sessionExpiresAt?: string;
+};
+type RegistrationRow = {
+  id: string;
+  code: string | null;
+  email: string;
+  data: StoredRegistration;
+  checked_in_at: string | null;
+  created_at: string;
+};
+type LocalData = { registrations: StoredRegistration[]; notes: Note[] };
 const localFile = path.join(process.cwd(), '.data', 'demo.json');
 const demoRuntime = globalThis as typeof globalThis & { oakDemoQueue?: Promise<unknown> };
 
@@ -66,478 +79,242 @@ function mutate<T>(fn: (data: LocalData) => T): Promise<T> {
   return task;
 }
 
-function mapParticipant(p: any, checkedInAt: string | null = null): Registration {
-  return {
-    id: p.id,
-    code: p.qr_code_id || p.registration_id || '',
-    firstName: p.first_name || '',
-    lastName: p.last_name || '',
-    organisation: p.organization || '',
-    role: p.role || '',
-    email: p.email || '',
-    phone: p.phone || '',
-    programmeArea: p.sub_partner_program_area || '',
-    dietary: p.dietary_requirements || '',
-    accessibility: p.accessibility_requirements || '',
-    travel: p.travel_requirements || '',
-    accommodation: p.accommodation_requirements || '',
-    consent: p.consent ?? true,
-    createdAt: p.registration_date || p.created_at || new Date().toISOString(),
-    checkedInAt,
-  };
+// Use the existing registrations/notes schema; never expose stored session credentials.
+function registrationFromRow(row: RegistrationRow): Registration {
+  return publicRegistration({
+    ...row.data,
+    id: row.id,
+    code: row.code || '',
+    email: row.email,
+    createdAt: row.created_at,
+    checkedInAt: row.checked_in_at,
+  });
+}
+
+function publicRegistration(stored: StoredRegistration): Registration {
+  const { sessionToken, sessionTokenHash, sessionExpiresAt, ...registration } = stored;
+  return registration;
 }
 
 export async function staffUser() {
   if (!isConfigured()) return null;
-  try {
-    const jar = await cookies();
-    const token =
-      jar.get('oak-session')?.value ||
-      jar.get('oak_participant_session')?.value ||
-      jar.get('oak_admin_session')?.value;
-
-    if (token && validToken(token)) {
-      const hash = tokenHash(token);
-      const { data: session } = await adminClient()
-        .from('auth_sessions')
-        .select('admin_id, participant_id, expires_at')
-        .eq('token_hash', hash)
-        .gt('expires_at', new Date().toISOString())
-        .maybeSingle();
-
-      if (session) {
-        if (session.admin_id) {
-          const { data: admin } = await adminClient()
-            .from('admins')
-            .select('id, username, is_master')
-            .eq('id', session.admin_id)
-            .maybeSingle();
-          if (admin) return { id: admin.id, email: admin.username, role: 'Coordination Team' };
-        }
-        if (session.participant_id) {
-          const { data: part } = await adminClient()
-            .from('participants')
-            .select('id, role, email')
-            .eq('id', session.participant_id)
-            .maybeSingle();
-          if (part && part.role === 'Coordination Team') {
-            return { id: part.id, email: part.email, role: part.role };
-          }
-        }
-      }
-    }
-
-    // Fallback: check Supabase auth
-    const client = await createClient();
-    const {
-      data: { user },
-    } = await client.auth.getUser();
-    if (user) {
-      const { data: staff } = await adminClient()
-        .from('staff')
-        .select('user_id')
-        .eq('user_id', user.id)
-        .maybeSingle();
-      if (staff) return user;
-    }
-  } catch {}
-  return null;
+  const client = await createClient();
+  const {
+    data: { user },
+    error,
+  } = await client.auth.getUser();
+  if (error || !user) return null;
+  const { data: staff, error: staffError } = await adminClient()
+    .from('staff')
+    .select('user_id')
+    .eq('user_id', user.id)
+    .maybeSingle();
+  if (staffError) throw new Error('Unable to verify Coordination Team access.');
+  return staff ? user : null;
 }
 
 export async function content(ownerId?: string) {
   if (!isConfigured()) {
-    const localNotes = (await localRead()).notes;
+    const data = await localRead();
     return {
       partners,
       sessions,
-      notes: ownerId ? localNotes.filter((note) => note.ownerId === ownerId) : localNotes,
+      notes: ownerId ? data.notes.filter((n) => n.ownerId === ownerId) : [],
     };
   }
   const client = adminClient();
-  try {
-    const notesQuery = client.from('session_notes').select('*').order('created_at', { ascending: false });
-    if (ownerId) notesQuery.or(`participant_id.eq.${ownerId},admin_id.eq.${ownerId}`);
-    const [pRes, sRes, nRes] = await Promise.all([
-      client.from('partners').select('*'),
-      client.from('sessions').select('*'),
-      notesQuery,
-    ]);
-
-    let mappedPartners: Partner[] = partners;
-    if (pRes.data && pRes.data.length > 0) {
-      mappedPartners = pRes.data.map((p: any, idx: number) => {
-        if (p.data) return p.data as Partner;
-        const fallback = partners[idx] || partners[0];
-        return {
-          id: p.id,
-          name: p.name || fallback.name,
-          initials: fallback?.initials || initials(p.name || 'OAK'),
-          region: p.region || fallback?.region || 'Global',
-          category: fallback?.category || 'Partner',
-          tags: p.areas_of_work
-            ? p.areas_of_work.split(',').map((t: string) => t.trim())
-            : fallback?.tags || [],
-          since: p.partner_since || fallback?.since || 2020,
-          website: p.website_url || fallback?.website || '',
-          about: p.description || fallback?.about || '',
-          contact: p.contact_name || fallback?.contact || '',
-          email: p.contact_email || fallback?.email || '',
-        };
-      });
-    }
-
-    let mappedSessions: Session[] = sessions;
-    if (sRes.data && sRes.data.length > 0) {
-      mappedSessions = sRes.data.map((s: any, idx: number) => {
-        if (s.data) return s.data as Session;
-        const fallback = sessions[idx] || sessions[0];
-        const dayNumber = s.day?.includes('Day 2') ? 2 : s.day?.includes('Day 3') ? 3 : 1;
-        return {
-          id: s.id,
-          day: dayNumber,
-          time: s.start_time ? s.start_time.slice(0, 5) : fallback.time,
-          end: s.end_time ? s.end_time.slice(0, 5) : fallback.end,
-          title: s.title || fallback.title,
-          speaker: s.speaker || fallback.speaker,
-          venue: s.venue || fallback.venue,
-          type: fallback.type || 'Plenary',
-          description: s.description || fallback.description,
-          featured: idx === 0,
-        };
-      });
-    }
-
-    let mappedNotes: Note[] = [];
-    if (nRes.data && nRes.data.length > 0) {
-      mappedNotes = nRes.data.map((n: any) => {
-        if (n.data) return n.data as Note;
-        return {
-          id: n.id,
-          ownerId: n.participant_id || n.admin_id,
-          sessionId: n.session_id,
-          text: n.note_text || '',
-          name: '',
-          organisation: '',
-          day: 1,
-          time: n.created_at
-            ? new Date(n.created_at).toLocaleTimeString('en-GB', {
-                hour: '2-digit',
-                minute: '2-digit',
-                timeZone: 'Africa/Harare',
-              })
-            : '09:00',
-        };
-      });
-    }
-
-    return { partners: mappedPartners, sessions: mappedSessions, notes: mappedNotes };
-  } catch {
-    return { partners, sessions, notes: (await localRead()).notes };
-  }
+  const [p, s, n] = await Promise.all([
+    client.from('partners').select('data').order('position'),
+    client.from('sessions').select('data').order('position'),
+    ownerId
+      ? client
+          .from('notes')
+          .select('data')
+          .eq('data->>ownerId', ownerId)
+          .order('created_at', { ascending: false })
+      : Promise.resolve({ data: [], error: null }),
+  ]);
+  if (p.error || s.error || n.error)
+    throw new Error('Event content could not be loaded. Please try again.');
+  return {
+    partners: (p.data || []).map((row) => row.data as Partner),
+    sessions: (s.data || []).map((row) => row.data as Session),
+    notes: (n.data || []).map((row) => row.data as Note),
+  };
 }
 
 export async function register(
   input: Omit<Registration, 'id' | 'code' | 'createdAt' | 'checkedInAt'>,
 ) {
+  // Live coordinator access is tied to a verified Supabase Auth staff account.
+  if (isConfigured() && input.role === 'Coordination Team' && !(await staffUser()))
+    throw new Error('Sign in with your approved Coordination Team account at /staff.');
   const token = newToken();
-  const entryId = randomUUID();
-  const registrationId = 'OAK-2026-' + randomBytes(16).toString('hex').toUpperCase();
-  const code = input.role === 'Partner' ? registrationId : '';
-
+  const entry: Registration = {
+    ...input,
+    id: randomUUID(),
+    code:
+      input.role === 'Partner' ? 'OAK-2026-' + randomBytes(16).toString('hex').toUpperCase() : '',
+    email: input.email.trim().toLowerCase(),
+    createdAt: new Date().toISOString(),
+    checkedInAt: null,
+  };
+  const stored: StoredRegistration = {
+    ...entry,
+    sessionTokenHash: sessionHash(token),
+    sessionExpiresAt: new Date(Date.now() + SESSION_MAX_AGE * 1000).toISOString(),
+  };
   if (!isConfigured()) {
-    const entry: Registration = {
-      ...input,
-      id: entryId,
-      code,
-      sessionToken: token,
-      createdAt: new Date().toISOString(),
-      checkedInAt: null,
-    };
-    return mutate((data) => {
-      if (data.registrations.some((r) => r.email === entry.email)) {
+    await mutate((data) => {
+      if (data.registrations.some((r) => r.email === entry.email))
         throw new Error(
           'This email is already registered. Use your saved pass or contact event staff.',
         );
-      }
-      data.registrations.push(entry);
-      return entry;
+      data.registrations.push(stored);
     });
-  }
-
-  const client = adminClient();
-  const email = input.email.toLowerCase().trim();
-
-  // Insert participant record
-  const { data: participant, error: partError } = await client
-    .from('participants')
-    .insert({
-      id: entryId,
-      registration_id: registrationId,
-      first_name: input.firstName,
-      last_name: input.lastName,
-      organization: input.organisation,
-      role: input.role,
-      email,
-      phone: input.phone || null,
-      sub_partner_program_area: input.programmeArea || null,
-      dietary_requirements: input.dietary || null,
-      accessibility_requirements: input.accessibility || null,
-      travel_requirements: input.travel || null,
-      accommodation_requirements: input.accommodation || null,
-      qr_code_id: code || null,
-      consent: input.consent ?? true,
-      consent_at: new Date().toISOString(),
-      registration_status: 'registered',
-      registration_date: new Date().toISOString(),
-    })
-    .select()
-    .single();
-
-  if (partError) {
-    if (partError.code === '23505') {
+  } else {
+    const { error } = await adminClient()
+      .from('registrations')
+      .insert({
+        id: entry.id,
+        code: entry.code || null,
+        email: entry.email,
+        data: stored,
+      });
+    if (error?.code === '23505')
       throw new Error(
         'This email is already registered. Use your saved pass or contact event staff.',
       );
-    }
-    // Fallback: try legacy registrations table
-    const legacyEntry: Registration = {
-      ...input,
-      id: entryId,
-      code,
-      sessionToken: token,
-      createdAt: new Date().toISOString(),
-      checkedInAt: null,
-    };
-    const { error: legErr } = await client
-      .from('registrations')
-      .insert({ id: legacyEntry.id, code: legacyEntry.code || null, email: legacyEntry.email, data: legacyEntry });
-    if (!legErr) return legacyEntry;
-
-    throw new Error('Registration could not be saved. Please try again.');
+    if (error) throw new Error('Registration could not be saved. Please try again.');
   }
-
-  // Create session in auth_sessions
-  await client.from('auth_sessions').insert({
-    token_hash: tokenHash(token),
-    participant_id: participant.id,
-    credential_version: 0,
-    expires_at: new Date(Date.now() + 14 * 86400 * 1000).toISOString(),
-  });
-
-  const registered = mapParticipant(participant, null);
-  registered.sessionToken = token;
-  return registered;
+  return { ...entry, sessionToken: token };
 }
 
-export async function findRegistration(code: string) {
-  if (!isConfigured())
-    return (await localRead()).registrations.find((r) => r.code === code) ?? null;
-
-  const client = adminClient();
-  const trimmed = code.trim().toUpperCase();
-  const { data: p, error } = await client
-    .from('participants')
-    .select('*, checkins(check_in_time)')
-    .or(`qr_code_id.eq.${trimmed},registration_id.eq.${trimmed}`)
-    .maybeSingle();
-
-  if (!error && p) {
-    const latestCheckin = p.checkins?.[0]?.check_in_time || null;
-    return mapParticipant(p, latestCheckin);
+export async function findRegistration(code: string): Promise<Registration | null> {
+  const normalized = code.trim().toUpperCase();
+  if (!isConfigured()) {
+    const entry = (await localRead()).registrations.find((r) => r.code === normalized);
+    return entry ? publicRegistration(entry) : null;
   }
-
-  // Fallback to legacy registrations table
-  const { data: leg } = await client
+  const { data, error } = await adminClient()
     .from('registrations')
-    .select('data, checked_in_at')
-    .eq('code', trimmed)
+    .select('*')
+    .eq('code', normalized)
     .maybeSingle();
-  if (leg) return { ...leg.data, checkedInAt: leg.checked_in_at } as Registration;
+  if (error) throw new Error('Registration could not be verified. Please try again.');
+  return data ? registrationFromRow(data as RegistrationRow) : null;
+}
 
-  return null;
+async function sessionRegistration(token: string): Promise<StoredRegistration | null> {
+  if (!validToken(token)) return null;
+  const hash = sessionHash(token);
+  if (!isConfigured()) {
+    const entry = (await localRead()).registrations.find(
+      (r) => r.sessionTokenHash === hash || r.sessionToken === token,
+    );
+    return entry && sessionIsActive(entry) ? entry : null;
+  }
+  const { data, error } = await adminClient()
+    .from('registrations')
+    .select('*')
+    .or(`data->>sessionTokenHash.eq.${hash},data->>sessionToken.eq.${token}`)
+    .maybeSingle();
+  if (error) throw new Error('Your session could not be verified. Please try again.');
+  if (!data || !sessionIsActive(data.data)) return null;
+  return { ...data.data, id: data.id, checkedInAt: data.checked_in_at };
 }
 
 export async function myRegistration() {
   const jar = await cookies();
   const token = jar.get('oak-session')?.value || jar.get('oak_participant_session')?.value;
-  if (!token || !validToken(token)) return null;
-
-  if (!isConfigured())
-    return (await localRead()).registrations.find((r) => r.sessionToken === token) ?? null;
-
-  const client = adminClient();
-  const hash = tokenHash(token);
-
-  // Look up in auth_sessions
-  const { data: session } = await client
-    .from('auth_sessions')
-    .select('participant_id')
-    .eq('token_hash', hash)
-    .gt('expires_at', new Date().toISOString())
-    .maybeSingle();
-
-  if (session?.participant_id) {
-    const { data: p } = await client
-      .from('participants')
-      .select('*, checkins(check_in_time)')
-      .eq('id', session.participant_id)
-      .maybeSingle();
-
-    if (p) {
-      const reg = mapParticipant(p, p.checkins?.[0]?.check_in_time || null);
-      reg.sessionToken = token;
-      return reg;
-    }
-  }
-
-  // Fallback: check legacy registrations table if present
-  try {
-    const { data: legacy } = await client
-      .from('registrations')
-      .select('data, checked_in_at')
-      .eq('data->>sessionToken', token)
-      .maybeSingle();
-    if (legacy) return { ...legacy.data, checkedInAt: legacy.checked_in_at } as Registration;
-  } catch {}
-
-  return null;
+  if (!token) return null;
+  const entry = await sessionRegistration(token);
+  return entry ? publicRegistration(entry) : null;
 }
 
-export async function allRegistrations() {
-  if (!isConfigured()) return (await localRead()).registrations;
-
-  const client = adminClient();
-  const { data, error } = await client
-    .from('participants')
-    .select('*, checkins(check_in_time)')
-    .order('registration_date', { ascending: false });
-
-  if (!error && data && data.length > 0) {
-    return data.map((p) => mapParticipant(p, p.checkins?.[0]?.check_in_time || null));
+export async function revokeRegistrationSession(token: string | undefined) {
+  if (!validToken(token)) return;
+  const hash = sessionHash(token);
+  if (!isConfigured()) {
+    await mutate((data) => {
+      for (const entry of data.registrations) {
+        if (entry.sessionTokenHash === hash || entry.sessionToken === token) {
+          delete entry.sessionToken;
+          delete entry.sessionTokenHash;
+          delete entry.sessionExpiresAt;
+        }
+      }
+    });
+    return;
   }
+  const entry = await sessionRegistration(token);
+  if (!entry) return;
+  const data = publicRegistration(entry);
+  const { error } = await adminClient()
+    .from('registrations')
+    .update({ data })
+    .eq('id', entry.id)
+    .or(`data->>sessionTokenHash.eq.${hash},data->>sessionToken.eq.${token}`);
+  if (error) throw new Error('Sign-out could not be completed. Please try again.');
+}
 
-  // Fallback to legacy registrations table
-  try {
-    const { data: legacy } = await client
-      .from('registrations')
-      .select('data, checked_in_at')
-      .order('created_at', { ascending: false });
-    if (legacy) return legacy.map((r) => ({ ...r.data, checkedInAt: r.checked_in_at })) as Registration[];
-  } catch {}
-
-  return [];
+export async function allRegistrations(): Promise<Registration[]> {
+  if (!isConfigured()) return (await localRead()).registrations.map(publicRegistration);
+  const { data, error } = await adminClient()
+    .from('registrations')
+    .select('*')
+    .order('created_at', { ascending: false });
+  if (error) throw new Error('Attendance could not be loaded. Please try again.');
+  return (data as RegistrationRow[]).map(registrationFromRow);
 }
 
 export async function checkIn(code: string) {
+  const normalized = code.trim().toUpperCase();
   if (!isConfigured())
     return mutate((data) => {
-      const r = data.registrations.find((r) => r.code === code);
-      if (!r || r.role !== 'Partner') return null;
-      const already = !!r.checkedInAt;
-      r.checkedInAt ??= new Date().toISOString();
-      return { registration: r, already };
+      const entry = data.registrations.find((r) => r.code === normalized && r.role === 'Partner');
+      if (!entry) return null;
+      const already = Boolean(entry.checkedInAt);
+      entry.checkedInAt ??= new Date().toISOString();
+      return { registration: publicRegistration(entry), already };
     });
-
-  const candidate = await findRegistration(code);
-  if (!candidate || candidate.role !== 'Partner') return null;
-
-  const client = adminClient();
-  const today = eventDate();
-
-  // Check if existing checkin today
-  const { data: existing } = await client
-    .from('checkins')
-    .select('check_in_time')
-    .eq('participant_id', candidate.id)
-    .eq('check_in_date', today)
+  // A single conditional UPDATE is atomic. Concurrent scans cannot overwrite the first timestamp.
+  // Attendance is stored on the registration row, so there is no second status table to desynchronise.
+  const { data, error } = await adminClient()
+    .from('registrations')
+    .update({ checked_in_at: new Date().toISOString() })
+    .eq('code', normalized)
+    .eq('data->>role', 'Partner')
+    .is('checked_in_at', null)
+    .select('*')
     .maybeSingle();
-
-  if (existing) {
-    return {
-      registration: { ...candidate, checkedInAt: existing.check_in_time },
-      already: true,
-    };
-  }
-
-  // Insert checkin
-  const { data: inserted, error } = await client
-    .from('checkins')
-    .insert({
-      participant_id: candidate.id,
-      check_in_date: today,
-      check_in_time: new Date().toISOString(),
-      attendance_status: 'checked_in',
-    })
-    .select('check_in_time')
-    .single();
-
-  if (error?.code === '23505') {
-    const { data: dup } = await client
-      .from('checkins')
-      .select('check_in_time')
-      .eq('participant_id', candidate.id)
-      .eq('check_in_date', today)
-      .single();
-    return {
-      registration: { ...candidate, checkedInAt: dup?.check_in_time || new Date().toISOString() },
-      already: true,
-    };
-  }
-
-  // Also update legacy checked_in_at if column exists
-  try {
-    await client
-      .from('registrations')
-      .update({ checked_in_at: new Date().toISOString() })
-      .eq('code', code)
-      .is('checked_in_at', null);
-  } catch {}
-
-  return {
-    registration: { ...candidate, checkedInAt: inserted?.check_in_time || new Date().toISOString() },
-    already: false,
-  };
+  if (error) throw new Error('Check-in could not be saved. Please try again.');
+  if (data) return { registration: registrationFromRow(data as RegistrationRow), already: false };
+  const existing = await findRegistration(normalized);
+  if (!existing || existing.role !== 'Partner') return null;
+  if (!existing.checkedInAt) throw new Error('Check-in could not be confirmed. Please try again.');
+  return { registration: existing, already: true };
 }
 
-export async function addNote(
-  input: Omit<Note, 'id' | 'time'>,
-  ownerType: 'participant' | 'admin' = 'participant',
-) {
-  const noteTime = new Date().toLocaleTimeString('en-GB', {
-    hour: '2-digit',
-    minute: '2-digit',
-    timeZone: 'Africa/Harare',
-  });
-  const noteId = randomUUID();
+export async function addNote(input: Omit<Note, 'id' | 'time'>) {
   const note: Note = {
     ...input,
-    id: noteId,
-    time: noteTime,
+    id: randomUUID(),
+    time: new Date().toLocaleTimeString('en-GB', {
+      hour: '2-digit',
+      minute: '2-digit',
+      timeZone: 'Africa/Harare',
+    }),
   };
-
+  if (!input.ownerId) throw new Error('A note owner is required.');
   if (!isConfigured())
-    return mutate((data) => {
+    await mutate((data) => {
       data.notes.push(note);
-      return note;
     });
-
-  const client = adminClient();
-  if (input.sessionId) {
-    const noteRow = {
-      id: noteId,
-      session_id: input.sessionId,
-      participant_id: ownerType === 'participant' ? input.ownerId : null,
-      admin_id: ownerType === 'admin' ? input.ownerId : null,
-      note_text: input.text,
-      created_at: new Date().toISOString(),
-      updated_at: new Date().toISOString(),
-    };
-    const { error } = await client.from('session_notes').insert(noteRow);
-    if (!error) return note;
+  else {
+    const { error } = await adminClient().from('notes').insert({ id: note.id, data: note });
+    if (error) throw new Error('Your note could not be saved. Please try again.');
   }
-
-  // Fallback to legacy notes table
-  await client.from('notes').insert({ id: note.id, data: note });
   return note;
 }
 
@@ -546,46 +323,28 @@ export async function updateNote(id: string, ownerId: string, input: Omit<Note, 
     return mutate((data) => {
       const note = data.notes.find((n) => n.id === id && n.ownerId === ownerId);
       if (!note) throw new Error('Note not found.');
-      Object.assign(note, input);
+      Object.assign(note, input, { ownerId });
       return note;
     });
-
-  const client = adminClient();
-  const { data: updated, error } = await client
-    .from('session_notes')
-    .update({ note_text: input.text, updated_at: new Date().toISOString() })
-    .eq('id', id)
-    .or(`participant_id.eq.${ownerId},admin_id.eq.${ownerId}`)
-    .select()
-    .maybeSingle();
-
-  if (!error && updated) {
-    return {
-      ...input,
-      id,
-      time: new Date(updated.updated_at).toLocaleTimeString('en-GB', {
-        hour: '2-digit',
-        minute: '2-digit',
-        timeZone: 'Africa/Harare',
-      }),
-    };
-  }
-
-  // Fallback to legacy notes table
-  const { data } = await client
+  const { data: row, error: readError } = await adminClient()
     .from('notes')
     .select('data')
     .eq('id', id)
     .eq('data->>ownerId', ownerId)
     .maybeSingle();
-  if (!data) throw new Error('Note not found.');
-  const note = { ...data.data, ...input };
-  await client
+  if (readError) throw new Error('Your note could not be loaded. Please try again.');
+  if (!row) throw new Error('Note not found.');
+  const note: Note = { ...row.data, ...input, id, ownerId };
+  const { data, error } = await adminClient()
     .from('notes')
     .update({ data: note })
     .eq('id', id)
-    .eq('data->>ownerId', ownerId);
-  return note as Note;
+    .eq('data->>ownerId', ownerId)
+    .select('id')
+    .maybeSingle();
+  if (error) throw new Error('Your note could not be saved. Please try again.');
+  if (!data) throw new Error('Note not found.');
+  return note;
 }
 
 export async function recordEmailStatus(entry: Registration, emailStatus: string) {
@@ -595,11 +354,18 @@ export async function recordEmailStatus(entry: Registration, emailStatus: string
       const row = data.registrations.find((r) => r.id === entry.id);
       if (row) row.emailStatus = emailStatus;
     });
-
-  try {
-    await adminClient()
-      .from('registrations')
-      .update({ data: entry })
-      .eq('id', entry.id);
-  } catch {}
+  const client = adminClient();
+  const { data: row, error: readError } = await client
+    .from('registrations')
+    .select('data')
+    .eq('id', entry.id)
+    .single();
+  if (readError) throw new Error('Email status could not be recorded.');
+  // Match the version read so a concurrent sign-out cannot be undone by this metadata update.
+  const { error } = await client
+    .from('registrations')
+    .update({ data: { ...row.data, emailStatus } })
+    .eq('id', entry.id)
+    .eq('data', JSON.stringify(row.data));
+  if (error) throw new Error('Email status could not be recorded.');
 }

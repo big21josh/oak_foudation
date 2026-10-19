@@ -19,11 +19,7 @@ export const registrationSchema = z.object({
     .max(254)
     .transform((v) => v.toLowerCase()),
 
-  phone: z
-    .string()
-    .trim()
-    .min(1, 'Enter your phone number')
-    .max(40),
+  phone: z.string().trim().min(1, 'Enter your phone number').max(40),
 
   dietary: z.string().trim().max(500).default(''),
 
@@ -36,10 +32,6 @@ export const registrationSchema = z.object({
   consent: z.literal(true, {
     message: 'Please agree to the privacy policy',
   }),
-
-  staffAccessCode: z.string().max(200).optional(),
-
-  staff_access_code: z.string().max(200).optional(),
 });
 
 export const noteSchema = z.object({

@@ -228,14 +228,10 @@ export function RegistrationPage({ initial }: { initial: Registration | null }) 
             />
           </div>
           {role === 'Coordination Team' && (
-            <Field
-              label="Staff access code"
-              name="staffAccessCode"
-              type="password"
-              autoComplete="off"
-              placeholder="Provided by the event organisers"
-              maxLength={200}
-            />
+            <p className="muted">
+              Coordination Team members need an approved staff account.{' '}
+              <Link href="/staff">Sign in here</Link> before registering.
+            </p>
           )}
           <Field
             label="Email Address"

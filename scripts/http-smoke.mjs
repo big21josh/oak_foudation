@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-const base = 'http://127.0.0.1:3000';
+const base = process.env.SMOKE_BASE_URL || 'http://127.0.0.1:3000';
 const home = await fetch(base).then((r) => r.text());
 assert(home.includes('Local demo'), 'Run only against local demo');
 const run = Date.now();
@@ -38,9 +38,7 @@ for (const [i, role] of roles.entries()) {
         ? role === 'Partner'
         : ['/check-in', '/attendance'].includes(page)
           ? role === 'Coordination Team'
-          : page === '/partners'
-            ? true
-            : role !== 'Partner';
+          : role !== 'Partner';
     const response = await call(page, cookie);
     const html = await response.text();
     const redirected = response.status === 307 || html.includes('NEXT_REDIRECT');

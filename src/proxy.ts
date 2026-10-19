@@ -1,6 +1,6 @@
 import { createServerClient } from '@supabase/ssr';
 import { NextResponse, type NextRequest } from 'next/server';
-import { isConfigured, getSupabaseUrl, getSupabaseKey } from '@/lib/supabase/config';
+import { isConfigured, getSupabaseUrl, getSupabasePublicKey } from '@/lib/supabase/config';
 
 export async function proxy(request: NextRequest) {
   let response = NextResponse.next({ request });
@@ -14,7 +14,7 @@ export async function proxy(request: NextRequest) {
   }
 
   const url = getSupabaseUrl();
-  const key = getSupabaseKey();
+  const key = getSupabasePublicKey();
 
   if (url && key) {
     try {
@@ -24,7 +24,9 @@ export async function proxy(request: NextRequest) {
           setAll: (values) => {
             values.forEach(({ name, value }) => request.cookies.set(name, value));
             response = NextResponse.next({ request });
-            values.forEach(({ name, value, options }) => response.cookies.set(name, value, options));
+            values.forEach(({ name, value, options }) =>
+              response.cookies.set(name, value, options),
+            );
           },
         },
       });
