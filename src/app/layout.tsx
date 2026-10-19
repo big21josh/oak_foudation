@@ -26,7 +26,16 @@ export const viewport: Viewport = {
 export const dynamic = 'force-dynamic';
 
 export default async function RootLayout({ children }: { children: React.ReactNode }) {
-  const role = await currentRole();
+  let role: string | null = null;
+  try {
+    role = await currentRole();
+  } catch {
+    // Public pages must remain available if a saved session cannot be verified.
+    // Protected pages and APIs still perform their own strict authorization checks.
+    console.error(
+      'Navigation session could not be verified; rendering without private navigation.',
+    );
+  }
   return (
     <html lang="en">
       <head>

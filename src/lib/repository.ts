@@ -214,12 +214,16 @@ async function sessionRegistration(token: string): Promise<StoredRegistration | 
     );
     return entry && sessionIsActive(entry) ? entry : null;
   }
-  const { data, error } = await adminClient()
+  const { data, error, status } = await adminClient()
     .from('registrations')
     .select('*')
     .or(`data->>sessionTokenHash.eq.${hash},data->>sessionToken.eq.${token}`)
     .maybeSingle();
-  if (error) throw new Error('Your session could not be verified. Please try again.');
+  if (error) {
+    // Record only status/code; never log the cookie, keyed hash, or credentials.
+    console.error('Supabase registration session lookup failed', { status, code: error.code });
+    throw new Error('Your session could not be verified. Please try again.');
+  }
   if (!data || !sessionIsActive(data.data)) return null;
   return { ...data.data, id: data.id, checkedInAt: data.checked_in_at };
 }
