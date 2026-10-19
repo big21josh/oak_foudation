@@ -34,7 +34,9 @@ export async function POST(request: NextRequest) {
       organisation: registration?.organisation ?? 'OAK Foundation',
     };
 
-    const note = id ? await updateNote(id, ownerId, input) : await addNote(input);
+    const note = id
+      ? await updateNote(id, ownerId, input)
+      : await addNote(input, registration ? 'participant' : 'admin');
     return NextResponse.json({ note });
   } catch (e) {
     return fail(e);

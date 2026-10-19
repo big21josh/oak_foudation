@@ -4,7 +4,13 @@ import { useState } from 'react';
 import { ShieldCheck, ScanLine } from 'lucide-react';
 import { createClient } from '@/lib/supabase/client';
 import { Card, Status } from './ui';
-export function StaffLogin({ demo }: { demo: boolean }) {
+export function StaffLogin({
+  demo,
+  databaseAccounts = false,
+}: {
+  demo: boolean;
+  databaseAccounts?: boolean;
+}) {
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   async function login(e: React.FormEvent<HTMLFormElement>) {
@@ -13,6 +19,20 @@ export function StaffLogin({ demo }: { demo: boolean }) {
     setError('');
     const form = new FormData(e.currentTarget);
     try {
+      if (databaseAccounts) {
+        const response = await fetch('/api/auth/sign-in', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            username: String(form.get('email')),
+            password: String(form.get('password')),
+          }),
+        });
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.error || 'Unable to sign in.');
+        window.location.href = '/attendance';
+        return;
+      }
       const client = createClient();
       const { error } = await client.auth.signInWithPassword({
         email: String(form.get('email')),
@@ -61,8 +81,13 @@ export function StaffLogin({ demo }: { demo: boolean }) {
         ) : (
           <form className="form-stack" onSubmit={login}>
             <label className="field">
-              <span>Staff email</span>
-              <input type="email" name="email" autoComplete="username" required />
+              <span>{databaseAccounts ? 'Staff username' : 'Staff email'}</span>
+              <input
+                type={databaseAccounts ? 'text' : 'email'}
+                name="email"
+                autoComplete="username"
+                required
+              />
             </label>
             <label className="field">
               <span>Password</span>

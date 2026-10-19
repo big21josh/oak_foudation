@@ -4,6 +4,8 @@ import { mkdir, readFile, writeFile, rename } from 'node:fs/promises';
 import path from 'node:path';
 import { cookies } from 'next/headers';
 import { adminClient } from './supabase/admin';
+import { databaseSchema } from './supabase/schema';
+import * as participantRepository from './participant-repository';
 import { createClient } from './supabase/server';
 import { isConfigured } from './supabase/config';
 import { initialNotes, partners, sessions } from './data';
@@ -97,6 +99,8 @@ function publicRegistration(stored: StoredRegistration): Registration {
 }
 
 export async function staffUser() {
+  if (isConfigured() && (await databaseSchema()) === 'participants')
+    return participantRepository.staffUser();
   if (!isConfigured()) return null;
   const client = await createClient();
   const {
@@ -114,6 +118,8 @@ export async function staffUser() {
 }
 
 export async function content(ownerId?: string) {
+  if (isConfigured() && (await databaseSchema()) === 'participants')
+    return participantRepository.content(ownerId);
   if (!isConfigured()) {
     const data = await localRead();
     return {
@@ -146,6 +152,8 @@ export async function content(ownerId?: string) {
 export async function register(
   input: Omit<Registration, 'id' | 'code' | 'createdAt' | 'checkedInAt'>,
 ) {
+  if (isConfigured() && (await databaseSchema()) === 'participants')
+    return participantRepository.register(input);
   // Live coordinator access is tied to a verified Supabase Auth staff account.
   if (isConfigured() && input.role === 'Coordination Team' && !(await staffUser()))
     throw new Error('Sign in with your approved Coordination Team account at /staff.');
@@ -191,6 +199,8 @@ export async function register(
 }
 
 export async function findRegistration(code: string): Promise<Registration | null> {
+  if (isConfigured() && (await databaseSchema()) === 'participants')
+    return participantRepository.findRegistration(code);
   const normalized = code.trim().toUpperCase();
   if (!isConfigured()) {
     const entry = (await localRead()).registrations.find((r) => r.code === normalized);
@@ -229,6 +239,8 @@ async function sessionRegistration(token: string): Promise<StoredRegistration | 
 }
 
 export async function myRegistration() {
+  if (isConfigured() && (await databaseSchema()) === 'participants')
+    return participantRepository.myRegistration();
   const jar = await cookies();
   const token = jar.get('oak-session')?.value || jar.get('oak_participant_session')?.value;
   if (!token) return null;
@@ -237,6 +249,8 @@ export async function myRegistration() {
 }
 
 export async function revokeRegistrationSession(token: string | undefined) {
+  if (isConfigured() && (await databaseSchema()) === 'participants')
+    return participantRepository.revokeRegistrationSession(token);
   if (!validToken(token)) return;
   const hash = sessionHash(token);
   if (!isConfigured()) {
@@ -263,6 +277,8 @@ export async function revokeRegistrationSession(token: string | undefined) {
 }
 
 export async function allRegistrations(): Promise<Registration[]> {
+  if (isConfigured() && (await databaseSchema()) === 'participants')
+    return participantRepository.allRegistrations();
   if (!isConfigured()) return (await localRead()).registrations.map(publicRegistration);
   const { data, error } = await adminClient()
     .from('registrations')
@@ -273,6 +289,8 @@ export async function allRegistrations(): Promise<Registration[]> {
 }
 
 export async function checkIn(code: string) {
+  if (isConfigured() && (await databaseSchema()) === 'participants')
+    return participantRepository.checkIn(code);
   const normalized = code.trim().toUpperCase();
   if (!isConfigured())
     return mutate((data) => {
@@ -300,7 +318,12 @@ export async function checkIn(code: string) {
   return { registration: existing, already: true };
 }
 
-export async function addNote(input: Omit<Note, 'id' | 'time'>) {
+export async function addNote(
+  input: Omit<Note, 'id' | 'time'>,
+  ownerType: 'participant' | 'admin' = 'participant',
+) {
+  if (isConfigured() && (await databaseSchema()) === 'participants')
+    return participantRepository.addNote(input, ownerType);
   const note: Note = {
     ...input,
     id: randomUUID(),
@@ -323,6 +346,8 @@ export async function addNote(input: Omit<Note, 'id' | 'time'>) {
 }
 
 export async function updateNote(id: string, ownerId: string, input: Omit<Note, 'id' | 'time'>) {
+  if (isConfigured() && (await databaseSchema()) === 'participants')
+    return participantRepository.updateNote(id, ownerId, input);
   if (!isConfigured())
     return mutate((data) => {
       const note = data.notes.find((n) => n.id === id && n.ownerId === ownerId);
@@ -353,6 +378,8 @@ export async function updateNote(id: string, ownerId: string, input: Omit<Note, 
 
 export async function recordEmailStatus(entry: Registration, emailStatus: string) {
   entry.emailStatus = emailStatus;
+  // The existing participants schema has no delivery-status column; keep the immediate result in the response.
+  if (isConfigured() && (await databaseSchema()) === 'participants') return;
   if (!isConfigured())
     return mutate((data) => {
       const row = data.registrations.find((r) => r.id === entry.id);

@@ -6,6 +6,12 @@ import { loadEnvConfig } from '@next/env';
 // Creates synthetic records in the configured project and removes only those records.
 async function main() {
   loadEnvConfig(process.cwd());
+  const { databaseSchema } = await import('../src/lib/supabase/schema');
+  if ((await databaseSchema()) === 'participants') {
+    const { runParticipantSmoke } = await import('./participant-supabase-smoke');
+    await runParticipantSmoke();
+    return;
+  }
   const { adminClient } = await import('../src/lib/supabase/admin');
   const repo = await import('../src/lib/repository');
   const client = adminClient();

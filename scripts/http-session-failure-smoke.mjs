@@ -68,7 +68,7 @@ try {
   const denied = await protectedResponse.json();
   assert.ok(denied.error);
   assert.equal(denied.registrations, undefined);
-  assert.ok(output.includes('Supabase registration session lookup failed'));
+  assert.ok(output.includes('Navigation session could not be verified'));
   console.log(
     'PASS: registration/privacy pages survive a saved-cookie database outage; attendance stays protected and server diagnostics are recorded.',
   );
